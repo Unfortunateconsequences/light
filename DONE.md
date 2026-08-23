@@ -2,9 +2,9 @@
 
 Документ фиксирует **закрытую работу** по двум узлам: роутер (`light_control` + LuCI) и ESP32 (`light_sensor`). Что ещё ждать железа или схемы — в [`PLAN.md`](PLAN.md).
 
-Железа на руках нет (роутер, ESP32, BH1750, лента — у клиента; плата **не приедет**, пишем только софт). Клиент прислал модели: **BH1750FVI** и **ESP32-WROOM-32 30-pin USB CH340C** (ESP32-D0WD-V3 rev 3.1, 40 МГц, MAC `68:fe:71:f9:fd:90`). Установка ipk, проверка LuCI в браузере, NTP на устройстве, прошивка платы и живой выход на ленту **не выполнялись**.
+Железа на руках нет (роутер, лента — у клиента; плата **не приедет**, пишем только софт). Клиент прислал модели: **BH1750FVI** и **ESP32-WROOM-32 30-pin USB CH340C** (ESP32-D0WD-V3 rev 3.1, 40 МГц, MAC `68:fe:71:f9:fd:90`). Установка ipk, проверка LuCI в браузере, NTP на устройстве и живой выход на ленту **не выполнялись**. Сенсор клиент **прошил сам** (git `cbcd191`, IDF 6.0.2): Wi‑Fi STA + BH1750, живые lux — [§2.10](#210-живая-прошивка-у-клиента).
 
-Актуальная версия контроллера: исходники и ipk **1.0.23**. Сенсор: исходники + **собранный** образ ESP-IDF **v5.5.5** (на плату не лили).
+Актуальная версия контроллера: исходники и ipk **1.0.23**. Сенсор: исходники + наша сборка ESP-IDF **v5.5.5**; на плате у клиента — его сборка с `cbcd191`.
 
 > **Перед прошивкой ESP32 задай SSID/пароль через ESP-IDF Kconfig**, не через C++.
 > `idf.py menuconfig` → Light Sensor Configuration (`CONFIG_LIGHT_SENSOR_WIFI_SSID` / `_PASS` / `_CONTROLLER_IP` / `_PORT`).
@@ -79,11 +79,11 @@ Host без root: `apt` в WSL требует sudo, toolchain через microma
 
 Feeds: мелкий `src-git base` (не `src-git-full`), luci pin, `src-link light` на `openwrt_pkg`. Свежий SDK **не содержит** target-библиотек: `libuci` / `libubox` / `libubus` собираются из feed `base`, иначе демон не линкуется.
 
-Путь к исходникам в Makefile пакета: `PKG_SOURCE_PATH` через `LIGHT_CONTROL_SRC` или абсолютный путь. Относительный `../../../light_control` работал только если SDK лежал внутри репозитория.
+Путь к исходникам в Makefile пакета: относительный `PKG_SOURCE_PATH:=../../../light_control` (SDK в `externals/openwrt`). Абсолютные `/mnt/c/Dev/...` в git **не** кладём.
 
 `luci.mk` **не прошёл**: host-сборка `luci-base` компилирует старый `lemon.c` (K&R) хостовым gcc 16 → `conflicting types for 'FindRulePrecedences'`. Для JS-приложения minify/`po2lmo` не обязательны — noarch ipk собирается вручную через `scripts/ipkg-build`.
 
-Скрипты: [`openwrt_light_control_build.sh`](light_control/openwrt_light_control_build.sh) (compile + ручная упаковка luci-app + копия в `light/ipk/`), [`openwrt_light_control_deploy.sh`](light_control/openwrt_light_control_deploy.sh) (scp + opkg — **не запускался**, нет роутера).
+Скрипты: [`openwrt_light_control_build.sh`](light_control/openwrt_light_control_build.sh) — **как у клиента в `origin/master`**: SDK `$HOME/Projects/light/light_control/externals/openwrt`, `make package/index` + `package/light_control/compile`. Наши WSL-пути (`$HOME/openwrt/sdk`, `/mnt/c/Dev/...`) из скрипта убраны после ревью PR. [`openwrt_light_control_deploy.sh`](light_control/openwrt_light_control_deploy.sh) — тот же дефолт SDK; override только через `OPENWRT_SDK` (scp + opkg — **не запускался**, нет роутера).
 
 | Пакет | Куда |
 |---|---|
@@ -228,6 +228,23 @@ ACL: read `get_stats`/`get_status`/`get_config`; write `reload`/`set_brightness`
 
 Хостовой демон (`ENABLE_UBUS=OFF`): `light_control/build_wsl/light_control`. ipk 1.0.23 собран скриптом сборки, на устройство не ставился.
 
+## 1.10 Память: состояние в классах, STL без кучи
+
+**Почему.** Краеугольное требование клиента: без кучи в ядре логики, без file-scope `static` в `.cpp`. Состояние — члены класса, входы — параметры, константы — `#define` / `constexpr` / Kconfig. C-колбэк IDF/ubus можно оставить тонкой `static`-обёрткой с указателем на объект. На роутере уже `DEPENDS += libstdcpp`, поэтому не-heap STL (`std::array`, `std::sort`) можно. `vector` / `string` по-прежнему нельзя.
+
+Раньше `UbusExporter` держал глобальный указатель на единственный экземпляр: C-колбэки ubus не принимают `this`. Кривая хранила C-массив и сортировала вставкой вручную.
+
+**Что сделано** (роутер; сенсор — [§2.9](#29-память-состояние-датчика-и-wi-fi-в-полях-класса)).
+
+| Файл | Назначение |
+|---|---|
+| [`ubus_exporter.h`](light_control/include/ubus_exporter.h) / [`.cpp`](light_control/src/ubus_exporter.cpp) | POD `Session` внутри объекта: `obj`, `type`, `reconnect_timer`, `reply`, `owner`. Колбэки методов берут `this` через `offsetof` по `ubus_object*`; таймер reconnect — по `uloop_timeout*`. File-scope синглтон снят |
+| [`brightness_curve.h`](light_control/include/brightness_curve.h) / [`.cpp`](light_control/src/brightness_curve.cpp) | `std::array<Entry, kMaxEntries>` + `std::sort`. Публичный API (`add` / `apply` / `at` / `sort`) тот же |
+| [`scene_scheduler.h`](light_control/include/scene_scheduler.h) | `SceneScheduler::scenes_` и `BrightnessPolicy::named_` — `std::array`. Публичный API тот же |
+| [`logger.cpp`](light_control/src/logger.cpp) | `debug_hex` пишет в `char line[1024]` через `snprintf`, без `ostringstream` / `std::string` |
+
+Поведение ubus, кривой, сцен и hex-лога не менялось. ipk **не** пересобирали (железа нет). Хостовый selftest после правки: **all checks passed**.
+
 Повторить:
 
 ```bash
@@ -250,7 +267,7 @@ export PYTHONPATH="$HOME/openwrt/pyshim"
 
 # Часть 2. ESP32 (`light_sensor`)
 
-Плата к нам не приедет. Пишем прошивку под конкретные модели клиента; **собираем мы, льёт он** — после `idf.py menuconfig` (SSID/пароль). Контроллер 1.0.23 в сенсорном шаге **не менялся**: тот же UDP, кривая/сцены/диммер на роутере. Менялась только прошивка узла `light_sensor`. Хостовые TEST/LINUX после правок пересобраны и линкуются.
+Плата к нам не приедет. Пишем прошивку под конкретные модели клиента; **собираем мы, льёт он** — после `idf.py menuconfig` (SSID/пароль). Клиент уже прошил git `cbcd191` (IDF 6.0.2) — [§2.10](#210-живая-прошивка-у-клиента). Контроллер 1.0.23 в сенсорном шаге **не менялся**: тот же UDP, кривая/сцены/диммер на роутере. Хостовые TEST/LINUX после правок пересобраны и линкуются.
 
 ## 2.1 Зачем три контура и «тупой» сенсор
 
@@ -309,6 +326,8 @@ UDP с шага протокола на контроллере не менялс
 
 На хосте тот же `bh1750.cpp` остаётся заглушкой `readLux()=250`.
 
+Шина, handle устройства и флаг `ready_` — поля `Bh1750`, не file-scope `static`. Подробности волны памяти — [§2.9](#29-память-состояние-датчика-и-wi-fi-в-полях-класса).
+
 ## 2.4 Wi-Fi STA и UDP
 
 **Почему переписали транспорт.** Раньше не хватало netif/event loop, `set_mode`, `connect`, ожидания IP; вызывался несуществующий `wifi_is_connected()`, а `main` создавал транспорт одним портом. Без полного STA прошивка не получит адрес и не дойдёт до роутера.
@@ -324,9 +343,11 @@ UDP с шага протокола на контроллере не менялс
 
 Пароль непустой → минимум WPA2-PSK. Пустой пароль → открытая сеть. После обрыва Wi-Fi обработчик снова вызывает `connect`. Неудачный `sendto` только предупреждение в лог: цикл измерений не останавливается (датчик жив, сеть может вернуться).
 
+Состояние STA больше не в file-scope `static`: см. [§2.9](#29-память-состояние-датчика-и-wi-fi-в-полях-класса).
+
 ## 2.5 Compile-time конфиг
 
-На ESP32 SSID/пароль/IP/порт контроллера приходят из ESP-IDF Kconfig ([`esp32/main/Kconfig.projbuild`](light_sensor/esp32/main/Kconfig.projbuild) → `sdkconfig.h` → [`include/config.hpp`](light_sensor/include/config.hpp)). Это механизм клиента: `idf.py menuconfig` или локальный `esp32/sdkconfig`. В git секретов нет. `sdkconfig.defaults` — **короткий overlay** (плата 4 MB / 240 МГц + пустые `CONFIG_LIGHT_SENSOR_*`), не дамп `sdkconfig` из IDF 6.
+На ESP32 SSID/пароль/IP/порт контроллера задаются в локальном **`sdkconfig`** (файл без `.h`, его пишет `idf.py`, в git не кладём). IDF сам прокидывает `CONFIG_*` в компиляцию — в C++ не нужен `#include "sdkconfig.h"` и не нужны свои `#define`. Символы объявлены в [`Kconfig.projbuild`](light_sensor/esp32/main/Kconfig.projbuild); `config.hpp` только берёт `CONFIG_LIGHT_SENSOR_*`. `sdkconfig.defaults` — **короткий overlay** (плата 4 MB / 240 МГц + пустые SSID/PASS), не дамп `sdkconfig` из IDF 6.
 
 Пины I2C и `DEVICE_ID` по-прежнему в `config.hpp`. Сменить SSID = menuconfig + пересборка + прошивка.
 
@@ -401,3 +422,32 @@ cmake -S light_sensor -B light_sensor/build_linux -DPLATFORM_LINUX=ON -DPLATFORM
 
 > **Ещё раз: перед `flash` задай SSID/пароль через `idf.py menuconfig` (Light Sensor Configuration) и пересобери.**
 > Образ с пустым SSID на живой плате бесполезен. Пины I2C (21/22) и адрес `0x23` — только если разводка другая.
+
+## 2.9 Память: состояние датчика и Wi-Fi в полях класса
+
+**Почему.** Та же дисциплина, что в [§1.10](#110-память-состояние-в-классах-stl-без-кучи): file-scope `static` в `.cpp` запрещён. Состояние драйвера и STA жило в `s_bus` / `s_dev` / `s_ready` и `s_events` / `s_retry`.
+
+**Что сделано.**
+
+| Файл | Назначение |
+|---|---|
+| [`bh1750.h`](light_sensor/include/sensors/bh1750.h) / [`.cpp`](light_sensor/src/sensors/bh1750.cpp) | `bus_`, `dev_`, `ready_` — поля `Bh1750`; `write_cmd` — метод. Константы команд — `constexpr` в анонимном namespace |
+| [`wifi_esp32.h`](light_sensor/include/transports/wifi_esp32.h) / [`.cpp`](light_sensor/src/transports/wifi_esp32.cpp) | `_events_mem`, `_events`, `_retry` — поля `WifiEsp32Transport`. Обработчик IDF — `static event_handler` с `arg = this` (разрешённое исключение C-API) |
+
+Поведение STA/I2C не менялось. Образ ESP32 в этой волне **не** пересобирали — на плате у клиента git `cbcd191` без этих правок. Хостовые TEST/LINUX эти файлы на ESP32-ветке не линкуют; после правки собирали и гоняли `light_control_selftest` (кривая/протокол), не прошивку.
+
+## 2.10 Живая прошивка у клиента
+
+**Почему отдельно.** До этого шага 6 сенсор был «собрано у нас, на плату не лили». 23 Aug 2026 клиент сам собрал и прошил ту версию, что у него на git (`cbcd191`, app version в логе совпадает), ESP-IDF **v6.0.2**, `idf.py --port /dev/ttyUSB0 flash monitor`.
+
+**Железо совпало с моделью.** ESP32-D0WD-V3 rev 3.1, 40 МГц, MAC `68:fe:71:f9:fd:90`, flash 4 MB DIO 40 МГц, CH340C `/dev/ttyUSB0`. Приложение `light_sensor_esp32.bin` 766 КБ @ `0x10000` (слот 1 МБ, 27% свободно).
+
+**Что подтвердил serial (115200):**
+
+- Wi‑Fi STA: Kconfig SSID задан (не пустой git-default). Первый `run → init` и `retry 1/20`, затем association, DHCP: STA `192.168.1.141`, шлюз `192.168.1.1`, канал 13, WPA2-PSK. RSSI слабый (~−84), но сессия держится.
+- Транспорт: `UDP -> 192.168.1.1:5005` (дефолт Kconfig).
+- Датчик: `BH1750FVI ready at 0x23`, раз в секунду `device_id=1 lux=307` (потом 308) — непрерывный H-resolution, адрес ADDR=GND, пины 21/22 как в `config.hpp`.
+
+Приём на роутере из этого лога **не** виден: `light_control` 1.0.23 на WDR4300 по-прежнему не ставили. Есть ли `Device 1 lux=…` в syslog / LuCI Status — следующий шаг на стороне клиента ([PLAN шаг 2](PLAN.md)).
+
+Наша волна памяти (поля `Bh1750` / Wi‑Fi, `std::array` у кривой и сцен) в `cbcd191` **нет**. Повторная прошивка после мержа — снова `menuconfig` (SSID в git пустой) и `flash`.

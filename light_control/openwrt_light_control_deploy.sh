@@ -5,7 +5,7 @@ set -euo pipefail
 ROUTER_IP="${ROUTER_IP:-192.168.1.1}"
 ROUTER_USER="${ROUTER_USER:-root}"
 
-BASE_DIR="${OPENWRT_SDK:-$HOME/openwrt/sdk}"
+BASE_DIR="${OPENWRT_SDK:-$HOME/Projects/light/light_control/externals/openwrt}"
 IPK_DIR="${BASE_DIR}/bin/packages/mips_24kc"
 
 if [[ ! -d "$BASE_DIR" ]]; then

@@ -5,7 +5,7 @@
 Целевое железо контроллера: TP-Link TL-WDR4300 v1, OpenWrt 23.05, LuCI, ubus.
 Сенсор: ESP32 / Linux / тестовая заглушка без железа.
 
-**Железа на руках нет** (роутер, ESP32, BH1750, лента — у клиента; плата **не приедет**, пишем только софт). Клиент прислал модели: **BH1750FVI** и **ESP32-WROOM-32 30-pin USB CH340C** (чип ESP32-D0WD-V3 rev 3.1, 40 МГц, MAC `68:fe:71:f9:fd:90`). Установка ipk, проверка LuCI в браузере, NTP на устройстве и живой выход на ленту **не выполняются**. Шаг 5 закрыт на хосте: WSL + selftest + ipk **1.0.23** без установки. Шаг 6 (сенсор) закрыт в исходниках и **собран** под ESP-IDF v5.5.5; на плату не прошивалось.
+**Железа на руках нет** (роутер, лента — у клиента; плата **не приедет**, пишем только софт). Клиент прислал модели: **BH1750FVI** и **ESP32-WROOM-32 30-pin USB CH340C** (чип ESP32-D0WD-V3 rev 3.1, 40 МГц, MAC `68:fe:71:f9:fd:90`). Установка ipk, проверка LuCI в браузере, NTP на устройстве и живой выход на ленту **не выполняются**. Шаг 5 закрыт на хосте: WSL + selftest + ipk **1.0.23** без установки. Шаг 6 (сенсор): исходники + наша сборка IDF v5.5.5; **клиент прошил** git `cbcd191` (IDF 6.0.2) — Wi‑Fi STA, BH1750 @ `0x23`, живые lux.
 
 | Шаг | Суть | Статус |
 |---|---|---|
@@ -15,7 +15,7 @@
 | 4 | Сцены утро/день/ночь + лог-заглушка диммера | Сделано (исходники, selftest ok). ipk 1.0.22 не пересобран, сразу 1.0.23 → [DONE §1.5](DONE.md) |
 | 5 часть | ubus `get_status` + страница Status | Сделано в исходниках → [DONE §1.6](DONE.md) |
 | 5 остаток | `reload` / `set_brightness` / `get_config` | **Сделано** в исходниках **1.0.23** (selftest ok). ipk пересобран, на роутер не ставился → [DONE §1.7](DONE.md) |
-| 6 сенсор | ESP-IDF + I2C BH1750FVI + Wi-Fi/UDP | **Собрано** (IDF v5.5.5), не прошивалось → [DONE §2.8](DONE.md) |
+| 6 сенсор | ESP-IDF + I2C BH1750FVI + Wi-Fi/UDP | **Проверено у клиента** (IDF 6.0.2, git `cbcd191`) → [DONE §2.10](DONE.md) |
 | 6 остаток | Драйвер ленты, bind на `interface` | Схема ленты неизвестна; роутера нет |
 | 7 | Синхронизация ESP32, нейросеть | Дальний горизонт |
 
@@ -61,7 +61,20 @@
 
 ## Что осталось
 
-Железа у нас нет — **не** ставим ipk и **не** прошиваем ESP32. Шаг 5 закрыт в исходниках. Сенсорная часть шага 6 собрана (ESP-IDF v5.5.5); чеклист клиента — ниже.
+### Память / STL — закрыто в исходниках
+
+Волна из требования клиента (без file-scope `static`, STL без кучи) **сделана.** Подробности и почему — [DONE §1.10](DONE.md#110-память-состояние-в-классах-stl-без-кучи) (роутер) и [DONE §2.9](DONE.md#29-память-состояние-датчика-и-wi-fi-в-полях-класса) (сенсор).
+
+Кратко: `Bh1750` (`bus_` / `dev_` / `ready_`), `WifiEsp32Transport` (`_events_mem` / `_events` / `_retry`, handler — `static` метод с `arg = this`), `UbusExporter` (синглтон → `Session` + `offsetof`), [`BrightnessCurve`](light_control/include/brightness_curve.h) — `std::array` + `std::sort`. ipk и образ ESP32 в этой волне не пересобирали: поведение то же. Selftest на WSL прошёл. Живая плата у клиента — git `cbcd191` без этой волны ([DONE §2.10](DONE.md#210-живая-прошивка-у-клиента)).
+
+Опциональный хвост той же дисциплины **сделан:** [`SceneScheduler`](light_control/include/scene_scheduler.h) и named maps — `std::array`; [`Logger::debug_hex`](light_control/src/logger.cpp) — стековый буфер, без `ostringstream`. Правило: [`.cursor/rules/memory-discipline.mdc`](.cursor/rules/memory-discipline.mdc).
+
+**Ревью последнего PR (клиент закоммитил вручную, PR как есть не принял):**
+
+- [`openwrt_light_control_build.sh`](light_control/openwrt_light_control_build.sh) + `PKG_SOURCE_PATH` — **сделано.** Вернули клиентский скрипт с `origin/master` и относительный путь в Makefile. Деплой снова по умолчанию на `$HOME/Projects/light/light_control/externals/openwrt`.
+- README — ряд замечаний (списком в этом апдейте не прислали). Не переписывать документ под наш layout; сверка с git-версией: SDK в `externals/openwrt`, не выдумывать `$HOME/openwrt`.
+
+Железа у нас нет — **не** ставим ipk. ESP32 клиент уже прошил (git `cbcd191`); наша волна памяти в ту прошивку не входила. Шаг 5 закрыт в исходниках. Чеклист роутера — ниже.
 
 **Перед прошивкой клиент обязан задать SSID/пароль (и при необходимости IP роутера) через ESP-IDF Kconfig** — `idf.py menuconfig` → Light Sensor Configuration, либо локальный `esp32/sdkconfig` (gitignored). Пустой SSID специально не поднимает Wi-Fi. Подробности — [DONE §2.5](DONE.md#25-compile-time-конфиг) и [DONE §2.8](DONE.md#28-сборка-прошивки-esp32-wsl--esp-idf).
 
@@ -132,17 +145,17 @@ logread | grep light_control | tail -n 30
 
 #### Шаг 6. Прошивка сенсора + остаток без схемы
 
-Прошивку льёт **клиент**. Образ у нас собран (IDF v5.5.5), но **с пустым SSID в git — лить его нельзя**. Сначала `idf.py menuconfig` (Light Sensor Configuration), потом пересборка, потом `idf.py -p /dev/ttyUSB0 flash monitor`.
+Пункты 1–5 **сделаны у клиента** 23 Aug 2026: git `cbcd191`, IDF **6.0.2**, `idf.py --port /dev/ttyUSB0 flash monitor`. Serial: STA IP, `UDP -> 192.168.1.1:5005`, `BH1750FVI ready at 0x23`, `device_id=1 lux≈307`. Подробности — [DONE §2.10](DONE.md#210-живая-прошивка-у-клиента). Наша волна памяти (§1.10 / §2.9) в ту прошивку **не** входила.
 
-Порядок. Пункты 1–5 — сенсор; 6–7 — если на том же стенде уже есть WDR4300.
+Пункты 6–7 — если на том же стенде уже есть WDR4300 (ipk **1.0.23**). Повторная прошивка с Kconfig:
 
-1. **ESP-IDF 5.2+** (у нас 5.5.5; у клиента бывает **6.0.2** — в `esp32/CMakeLists.txt` уже есть `-D_GNU_SOURCE`). `idf.py set-target esp32`. IDF 4.x / Arduino / PlatformIO этот `CMakeLists` не возьмут (`esp_driver_i2c`).
-2. **Разводка:** VCC→3V3, GND, SDA GPIO21, SCL GPIO22, ADDR на GND (`0x23`). Только 3.3 V.
-3. **Прописать Wi-Fi в Kconfig** **до** `flash` (без этого Wi-Fi не поднимется):
-   - `idf.py menuconfig` → Light Sensor Configuration → SSID / пароль сети 2.4 ГГц, куда ходит роутер (открытая: пароль пустой);
+1. **ESP-IDF 5.2+** (у нас 5.5.5; у клиента **6.0.2** — в `esp32/CMakeLists.txt` уже есть `-D_GNU_SOURCE`). `idf.py set-target esp32`. IDF 4.x / Arduino / PlatformIO этот `CMakeLists` не возьмут (`esp_driver_i2c`).
+2. **Разводка** (подтверждена): VCC→3V3, GND, SDA GPIO21, SCL GPIO22, ADDR на GND (`0x23`). Только 3.3 V.
+3. **Wi-Fi в Kconfig** (клиент уже задал; пустой SSID в git специально не поднимает STA):
+   - `idf.py menuconfig` → Light Sensor Configuration → SSID / пароль сети 2.4 ГГц;
    - при необходимости Controller IP / UDP port; пины I2C и `BH1750_I2C_ADDR` по-прежнему в [`include/config.hpp`](light_sensor/include/config.hpp).
-   Оставить пустой SSID — в мониторе отказ connect и вечный delay. Затем **пересобрать**. Не коммитить `esp32/sdkconfig` (там секреты; файл в `.gitignore`).
-4. **Собрать и прошить** с той машины, где уже работал `esptool` (`/dev/ttyUSB0`, RTS):
+   Не коммитить `esp32/sdkconfig` (секреты; файл в `.gitignore`).
+4. **Собрать и прошить** (`/dev/ttyUSB0`, RTS):
 
 ```bash
 cd light_sensor/esp32
@@ -152,14 +165,9 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-5. **Что ждать в serial (115200)** после удачного старта:
-   - `node start id=1 -> 192.168.1.1:5005`
-   - `got ip a.b.c.d`
-   - `UDP -> 192.168.1.1:5005`
-   - `BH1750FVI ready at 0x23`
-   - раз в секунду `device_id=1 lux=…` (число меняется от света).
+5. **Serial (115200)** после удачного старта: `got ip`, `UDP -> …:5005`, `BH1750FVI ready at 0x23`, раз в секунду `device_id=1 lux=…`.
 6. Если роутер в той же LAN: поставить ipk **1.0.23**, `rpcd restart`. В syslog: `Device 1 lux=… brightness=… scene=…`. В LuCI Status — `has_packet`, lux, сцена.
-7. Прислать лог `monitor`, если что-то падает. Типичное:
+7. Типичное, если снова падает:
    - `BH1750 not found at 0x23` — ADDR/пины/питание/другой адрес `0x5C`;
    - `Wi-Fi connect timeout` — SSID/пароль, 2.4 ГГц (ESP32 без 5 ГГц), AP не WPA3-only;
    - `UDP send failed` при живом lux — нет маршрута до `192.168.1.1:5005` (роутер, firewall, демон не слушает).

@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "esp_event.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "lwip/sockets.h"
 
 class WifiEsp32Transport {
@@ -17,6 +20,8 @@ public:
     bool send(const unsigned char* data, std::size_t len);
 
 private:
+    static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* data);
+
     const char* _ssid = nullptr;
     const char* _pass = nullptr;
     const char* _ip = nullptr;
@@ -26,4 +31,8 @@ private:
     bool _initialized = false;
 
     struct sockaddr_in _addr{};
+
+    StaticEventGroup_t _events_mem{};
+    EventGroupHandle_t _events = nullptr;
+    int _retry = 0;
 };
