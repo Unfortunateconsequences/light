@@ -138,7 +138,9 @@ From `light_control/`:
 ./openwrt_light_control_build.sh
 ```
 
-Or from the SDK:
+The script compiles `light_control`, then packs **luci-app-light-control** itself: it copies the JS views, menu, and rpcd ACL into a noarch ipk via the SDK `scripts/ipkg-build`. That avoids `luci.mk` / `luci-base` host tools (lemon, po2lmo), which this JS app does not need. Override the tree with `LIGHT_CONTROL_SRC` if the script is not run from `light_control/`.
+
+Or from the SDK (daemon only — LuCI still needs the script’s step 3):
 
 ```sh
 cd externals/openwrt
@@ -146,14 +148,14 @@ make package/index
 make package/light_control/compile V=s
 ```
 
-Output lives under `bin/packages/mips_24kc/` (not `bin/targets/ath79/generic/`):
+Output lives under `bin/packages/mips_24kc/light_control/` (not `bin/targets/ath79/generic/`):
 
 ```
 bin/packages/mips_24kc/light_control/light_control_1.0.23-1_mips_24kc.ipk
-bin/packages/mips_24kc/*/luci-app-light-control_1.0.23-1_all.ipk
+bin/packages/mips_24kc/light_control/luci-app-light-control_1.0.23-1_all.ipk
 ```
 
-The LuCI package is noarch (`luci.mk`). The deploy script finds both ipk files under `bin/packages/mips_24kc/`.
+A copy is also written to `../ipk/` when that directory can be created. Deploy installs **both** ipk files.
 
 ## Installation on the router
 

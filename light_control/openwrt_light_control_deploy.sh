@@ -21,23 +21,24 @@ if [[ -z "$DAEMON_IPK" ]]; then
   echo "Сначала запусти сборку: ./openwrt_light_control_build.sh" >&2
   exit 1
 fi
+if [[ -z "$LUCI_IPK" ]]; then
+  echo "Ошибка: luci-app-light-control_*.ipk не найден в $IPK_DIR" >&2
+  echo "Сначала запусти сборку: ./openwrt_light_control_build.sh" >&2
+  exit 1
+fi
 
 echo "=== Деплой на роутер ($ROUTER_IP) ==="
 echo "Демон: $DAEMON_IPK"
-[[ -n "$LUCI_IPK" ]] && echo "LuCI:  $LUCI_IPK"
+echo "LuCI:  $LUCI_IPK"
 
-REMOTE_FILES=("$(basename "$DAEMON_IPK")")
-tar czf - -C "$(dirname "$DAEMON_IPK")" "$(basename "$DAEMON_IPK")" \
-  ${LUCI_IPK:+-C "$(dirname "$LUCI_IPK")" "$(basename "$LUCI_IPK")"} \
+DAEMON_NAME="$(basename "$DAEMON_IPK")"
+LUCI_NAME="$(basename "$LUCI_IPK")"
+
+tar czf - -C "$(dirname "$DAEMON_IPK")" "$DAEMON_NAME" \
+  -C "$(dirname "$LUCI_IPK")" "$LUCI_NAME" \
   | ssh "${ROUTER_USER}@${ROUTER_IP}" 'cat > /tmp/light_control.tar.gz'
 
-INSTALL_CMD="cd /tmp && tar xzf light_control.tar.gz && opkg install --force-reinstall $(basename "$DAEMON_IPK")"
-if [[ -n "$LUCI_IPK" ]]; then
-  INSTALL_CMD="$INSTALL_CMD $(basename "$LUCI_IPK")"
-  REMOTE_FILES+=("$(basename "$LUCI_IPK")")
-fi
-INSTALL_CMD="$INSTALL_CMD && /etc/init.d/light_control restart && /etc/init.d/rpcd restart"
-
-ssh "${ROUTER_USER}@${ROUTER_IP}" "$INSTALL_CMD"
+ssh "${ROUTER_USER}@${ROUTER_IP}" \
+  "cd /tmp && tar xzf light_control.tar.gz && opkg install --force-reinstall ${DAEMON_NAME} ${LUCI_NAME} && /etc/init.d/light_control restart && /etc/init.d/rpcd restart"
 
 echo "=== Готово ==="
