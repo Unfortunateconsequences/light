@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Запоминаем путь, откуда запустили скрипт
+# Default SDK is the client's tree. Override with OPENWRT_SDK; do not hardcode another machine.
 START_DIR="$(pwd)"
 
-BASE_DIR="$HOME/Projects/light/light_control/externals/openwrt"
+BASE_DIR="${OPENWRT_SDK:-$HOME/Projects/light/light_control/externals/openwrt}"
+
+if [[ ! -d "$BASE_DIR" ]]; then
+  echo "Ошибка: SDK не найден: $BASE_DIR" >&2
+  echo "Задай OPENWRT_SDK, если SDK лежит не в \$HOME/Projects/light/light_control/externals/openwrt" >&2
+  exit 1
+fi
+
 cd "$BASE_DIR"
 
 echo "=== Шаг 1: Обновление индекса пакетов (чтобы OpenWrt увидел light_control) ==="
