@@ -1,7 +1,3 @@
-#include "sensors/bh1750.h"
-
-#include "config.hpp"
-
 // I2C чипа — 2 байта raw. UDP наружу — 3 байта [id][lux_hi][lux_lo].
 // Это разные протоколы; длина UDP-пакета не конфликтует с шиной датчика.
 //
@@ -12,12 +8,14 @@
 //   SCL -> GPIO22 (I2C_SCL_GPIO)
 //   ADDR -> GND = 0x23, VCC = 0x5C
 
-#if defined(PLATFORM_ESP32)
-
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include "config.hpp"
+#include "sensors/bh1750.h"
+
 
 static const char* TAG = "Bh1750";
 
@@ -98,18 +96,10 @@ int Bh1750::readLux() {
 
     const uint32_t raw16 = (static_cast<uint32_t>(raw[0]) << 8) | raw[1];
     // H-resolution: lux = raw / 1.2 = raw * 5 / 6
+
+    ESP_LOGI(TAG, "device_id=%u lux=%u", static_cast<unsigned>(DEVICE_ID), static_cast<unsigned>(raw16));
+
     return static_cast<int>((raw16 * 5U) / 6U);
 }
 
-#else
 
-bool Bh1750::init(uint8_t address) {
-    (void)address;
-    return true;
-}
-
-int Bh1750::readLux() {
-    return 250;
-}
-
-#endif

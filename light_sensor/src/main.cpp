@@ -2,6 +2,7 @@
 
 #include "transports/transport_wrapper.hpp"
 #include "config.hpp"
+#include "sensors/stub.h"
 #include "app_core.h"
 
 int main() {
@@ -19,5 +20,11 @@ int main() {
         return 1;
     }
 
-    run_application(transport);
+    Stub sensor(SensorScenario::Evening);
+    if (!sensor.init(BH1750_I2C_ADDR)) {
+        std::cerr << "[ERROR] Sensor initialization failed\n";
+        return 1;
+    }
+
+    run_application(transport, sensor);
 }

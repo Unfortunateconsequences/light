@@ -6,8 +6,10 @@
 
 // ------------------------------------------------------------------
 // ГЛОБАЛЬНЫЕ ДЕФОЛТЫ (единая точка правды для всех платформ)
+// Эти значения используются как fallback, если платформа не переопределила их.
 // ------------------------------------------------------------------
 constexpr uint8_t DEVICE_ID = 1;
+
 constexpr unsigned SAMPLE_PERIOD_MS = 1000;
 
 // BH1750FVI: ADDR к GND → 0x23, ADDR к VCC → 0x5C. GY-302 обычно 0x23.
@@ -22,15 +24,12 @@ constexpr uint8_t BH1750_I2C_ADDR = 0x23;
 // ------------------------------------------------------------------
 
 #if defined(PLATFORM_ESP32)
-    #include "sdkconfig.h"
     #include "transports/wifi_esp32.h"
+
     using TransportType = TransportWrapper<WifiEsp32Transport>;
     #define TRANSPORT_HAS_WIFI
 
-    // ESP-IDF подставит CONFIG_* из sdkconfig / menuconfig (Kconfig.projbuild).
-    // Реальные SSID/пароль в git не кладём: default в Kconfig пустой.
-    // Перед прошивкой: idf.py menuconfig → Light Sensor Configuration
-    // (или правь локальный esp32/sdkconfig — он в .gitignore).
+    // ESP‑IDF подставит CONFIG_* из sdkconfig
     static constexpr const char* kWifiSsid = CONFIG_LIGHT_SENSOR_WIFI_SSID;
     static constexpr const char* kWifiPass = CONFIG_LIGHT_SENSOR_WIFI_PASS;
     static constexpr const char* kControllerIp = CONFIG_LIGHT_SENSOR_CONTROLLER_IP;
@@ -41,7 +40,6 @@ constexpr uint8_t BH1750_I2C_ADDR = 0x23;
     constexpr const char* CONTROLLER_IP = kControllerIp;
     constexpr uint16_t CONTROLLER_PORT = kControllerPort;
 
-    // ESP32-WROOM-32 30-pin: GPIO21/22 есть на гребенке.
     constexpr int I2C_SDA_GPIO = 21;
     constexpr int I2C_SCL_GPIO = 22;
     constexpr uint32_t I2C_HZ = 100000;
@@ -51,8 +49,11 @@ constexpr uint8_t BH1750_I2C_ADDR = 0x23;
     using TransportType = TransportWrapper<UdpPosixTransport>;
     #define TRANSPORT_HAS_IP_AND_PORT
 
-    constexpr const char* CONTROLLER_IP = "192.168.1.1";
-    constexpr uint16_t CONTROLLER_PORT = 5005;
+    static constexpr const char* kControllerIp = "192.168.1.1";
+    static constexpr uint16_t kControllerPort = 5005;
+
+    constexpr const char* CONTROLLER_IP = kControllerIp;
+    constexpr uint16_t CONTROLLER_PORT = kControllerPort;
 
 #elif defined(PLATFORM_TEST)
     #include "transports/null.h"

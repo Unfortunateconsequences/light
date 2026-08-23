@@ -17,7 +17,7 @@ class LastStatus;
 
 class UdpServer {
 public:
-    explicit UdpServer(StatsCollector& stats, LastStatus& last_status, Logger& logger);
+     explicit UdpServer(StatsCollector& stats, LastStatus& last_status, Logger& logger);
     ~UdpServer();
 
     bool bind_to(const char* addr, uint16_t port);
@@ -41,7 +41,7 @@ private:
     ssize_t recv_packet(char* buf, size_t buf_len,
                         char* ip, size_t ip_len,
                         uint16_t& port);
-
+    
     void close_socket();
     void reapply_output_locked();
 

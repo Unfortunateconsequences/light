@@ -12,6 +12,8 @@ ProtocolParser::Result ProtocolParser::parse(const char* data, size_t len) {
     res.lux = static_cast<uint16_t>(
         (static_cast<uint16_t>(static_cast<uint8_t>(data[1])) << 8) |
         static_cast<uint16_t>(static_cast<uint8_t>(data[2])));
+
     res.is_valid = true;
+    
     return res;
 }

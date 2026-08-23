@@ -5,7 +5,9 @@
 
 #include "transports/transport_wrapper.hpp"
 #include "config.hpp"
+#include "sensors/bh1750.h"
 #include "app_core.h"
+
 
 static const char* TAG = "app_esp32";
 
@@ -33,5 +35,12 @@ extern "C" void app_main(void) {
         }
     }
 
-    run_application(transport);
+    Bh1750 sensor;
+    if (!sensor.init(BH1750_I2C_ADDR)) {
+        ESP_LOGE(TAG, "BH1750 init failed at 0x%02X SDA=%d SCL=%d",
+                 static_cast<unsigned>(BH1750_I2C_ADDR), I2C_SDA_GPIO, I2C_SCL_GPIO);
+        return;
+    }
+
+    run_application(transport, sensor);
 }
