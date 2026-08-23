@@ -1,20 +1,20 @@
 # light_sensor
 
-A compact, memory-safe sensor node for ambient light measurement (BH1750) with UDP reporting. Designed for embedded platforms (ESP32, Linux) under strict memory constraints: no dynamic/static allocation, no raw pointers.
+A compact, memory-safe sensor node for ambient light measurement (BH1750) with UDP reporting. Designed for embedded platforms (ESP32, Linux) under strict memory constraints: no heap, no file-scope static state. Stack variables and fixed-size buffers only. I2C and Wi-Fi handles live in class fields; IDF C callbacks may be thin `static` wrappers with `arg = this`.
 
 UDP payload is **3 bytes** `[device_id][lux_hi][lux_lo]` (lux as `uint16` big-endian). Brightness mapping lives on the controller, not on the sensor.
 
 ## Key Features
 
-- **Memory discipline**: stack variables and fixed-size buffers only.
+- **Memory discipline**: stack variables and fixed-size buffers; driver state in object fields, not file-scope `static`.
 - **Modular architecture**: sensors and transports are decoupled.
 - **Multiple transport backends**: UDP POSIX (Linux), Null (tests), ESP32 Wi-Fi.
 - **ESP32 config via ESP-IDF Kconfig**: SSID/password/controller IP are set in `menuconfig` / local `sdkconfig` (gitignored). `sdkconfig.defaults` is a small overlay, not a dumped sdkconfig.
 
 ## Supported Sensors
 
-- **BH1750FVI (GY-302)** – I2C on ESP32; host builds keep a compile stub in the same file.
-- **Stub sensor** – mock for CI and Linux/TEST.
+- **BH1750FVI (GY-302)** – I2C on ESP32 only (`bh1750.cpp` is compiled by the IDF wrapper, not host CMake).
+- **Stub sensor** – mock for CI and Linux/TEST (`stub.cpp`).
 
 ## Build Requirements
 
@@ -47,7 +47,7 @@ Or manually:
 
 ### ESP32 (Wi-Fi + BH1750FVI)
 
-Host CMake cannot cross-compile this target. Use the ESP-IDF project in `esp32/`.
+Host CMake has **only** `PLATFORM_LINUX` and `PLATFORM_TEST`. There is no `PLATFORM_ESP32` CMake option. Use the ESP-IDF project in `esp32/`.
 
 #### Installing ESP-IDF
 
@@ -148,5 +148,5 @@ The wrapper compiles `src/main_esp32.cpp`, `src/app_core.cpp`, `src/sensors/bh17
 
 Platform macros:
 
-- `PLATFORM_LINUX` / `PLATFORM_TEST` — host CMake
-- `PLATFORM_ESP32` — set by `esp32/CMakeLists.txt`, not host CMake
+- `PLATFORM_LINUX` / `PLATFORM_TEST` — host CMake options (exactly one required)
+- `PLATFORM_ESP32` — set by `esp32/CMakeLists.txt` (`idf_build_set_property`), not host CMake
