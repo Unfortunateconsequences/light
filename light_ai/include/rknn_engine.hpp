@@ -13,7 +13,9 @@ public:
     int run() const;
 
     // M2.5: pin inference to NPU core(s) via rknn_set_core_mask.
-    // mask: 0 = AUTO (do not call), 1 = core 0, 3 = cores 0+1, 7 = 0+1+2.
+    // mask: 0 = AUTO (do not call), 1/2/4 = core 0/1/2 (the per-core
+    // flags of rknn_api.h, used by the M4 pool), 3 = cores 0+1,
+    // 7 = 0+1+2.
     int set_core_mask( unsigned mask ) const;
 
     void* input_data() const { return in_mem_ ? in_mem_->virt_addr : nullptr; }

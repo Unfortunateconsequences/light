@@ -132,13 +132,22 @@ int RknnEngine::set_core_mask( unsigned mask ) const
         return -1;
 
     rknn_core_mask m = RKNN_NPU_CORE_AUTO;
+    // M4: 1/2/4 are the per-core flags of rknn_api.h (CORE_0/1/2) — the
+    // pool pins one engine per core with these. 3/7 stay the pair/triple
+    // masks of the single-context path.
     switch ( mask )
     {
         case 1:
             m = RKNN_NPU_CORE_0;
             break;
+        case 2:
+            m = RKNN_NPU_CORE_1;
+            break;
         case 3:
             m = RKNN_NPU_CORE_0_1;
+            break;
+        case 4:
+            m = RKNN_NPU_CORE_2;
             break;
         case 7:
             m = RKNN_NPU_CORE_0_1_2;

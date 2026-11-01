@@ -65,10 +65,11 @@ namespace
 NetEncoder::NetEncoder( int w, int h, int fps, int port, const std::string& host, int bitrate_kbps, int model_w, int model_h )
   : w_( w )
   , h_( h )
-  , fps_( fps > 0 ? fps : 25 )
+  , fps_( fps )
   , port_( port )
   , bitrate_kbps_( bitrate_kbps > 0 ? bitrate_kbps : 12000 )
   , host_( host )
+  , vfr_( fps <= 0 )  // --net-fps 0: follow the source
   , model_w_( model_w )
   , model_h_( model_h )
 {
@@ -131,10 +132,19 @@ NetEncoder::NetEncoder( int w, int h, int fps, int port, const std::string& host
     // hwdevice/hwframes pools entirely (encode_init returns early).
     ctx->pix_fmt = AV_PIX_FMT_DRM_PRIME;
     ctx->sw_pix_fmt = AV_PIX_FMT_NV12;
-    ctx->time_base = AVRational { 1, fps_ };
-    ctx->framerate = AVRational { fps_, 1 };
+    // M4: net-fps 0 = follow the source. The codec gets the native
+    // MPEG-TS time base (1/90000) and stamps pts from the real dequeue
+    // times (VFR): night ~25, day up to 30 — no fixed ceiling. The GOP
+    // stays 25 so a late joiner still waits at most about one second.
+    // CFR keeps the legacy 1/fps setup verbatim.
+    ctx->time_base = vfr_ ? AVRational { 1, 90000 } : AVRational { 1, fps_ };
+    // VFR: rc still needs a numeric fps — 0/1 reaches MPP as the auto
+    // marker (65535) and the CBR per-frame budget collapses (stream
+    // dries to ~83 kbps). Nominal 25 for rate control only; pts stay
+    // VFR from dequeue times.
+    ctx->framerate = vfr_ ? AVRational { 25, 1 } : AVRational { fps_, 1 };
     ctx->bit_rate = static_cast<int64_t>( bitrate_kbps_ ) * 1000;
-    ctx->gop_size = fps_;   // 1 s: a late joiner waits at most one GOP
+    ctx->gop_size = vfr_ ? 25 : fps_;  // 1 s: a late joiner waits at most one GOP
     ctx->max_b_frames = 0;  // no reorder: minimal latency
     // Non-fatal: option names differ between ffmpeg-rockchip builds.
     if ( av_opt_set( ctx, "rc_mode", "CBR", 0 ) < 0 )
@@ -146,6 +156,8 @@ NetEncoder::NetEncoder( int w, int h, int fps, int port, const std::string& host
         throw std::runtime_error( "net encoder: avcodec_open2(h264_rkmpp) failed" );
     }
     std::cout << "enc: h264_rkmpp open: " << w_ << 'x' << h_ << ", " << bitrate_kbps_ << " kbps, gop " << ctx->gop_size << '\n';
+    if ( vfr_ )
+        std::cout << "enc: VFR follow-source mode: time_base 1/90000, pts from dequeue times\n";
 
     frame_ = av_frame_alloc();
     pkt_ = av_packet_alloc();
@@ -178,7 +190,7 @@ NetEncoder::~NetEncoder()
         // Drain only if frames were actually encoded: EOF on an idle
         // encoder makes the wrapper's flush path touch an already-torn-down
         // MPP pool ("invalid mem pool ptr" at exit, idle-run case).
-        if ( pts_ > 0 && avcodec_send_frame( ctx, nullptr ) == 0 )
+        if ( frames_sent_ > 0 && avcodec_send_frame( ctx, nullptr ) == 0 )
         {
             AVPacket* pkt = static_cast<AVPacket*>( pkt_ );
             for ( ;; )
@@ -357,8 +369,8 @@ void NetEncoder::serve()
         st->codecpar->width = w_;
         st->codecpar->height = h_;
         st->codecpar->bit_rate = static_cast<AVCodecContext*>( enc_ )->bit_rate;
-        st->time_base = AVRational { 1, fps_ };
-        st->avg_frame_rate = AVRational { fps_, 1 };
+        st->time_base = vfr_ ? AVRational { 1, 90000 } : AVRational { 1, fps_ };
+        st->avg_frame_rate = vfr_ ? AVRational { 0, 1 } : AVRational { fps_, 1 };
 
         // Live-stream patch: повторять PAT/PMT/SDT в эфире, чтобы приёмник
         // мог подключиться в любой момент, а не только на старте потока.
@@ -379,10 +391,13 @@ void NetEncoder::serve()
             continue;
         }
         const AVRational tb = st->time_base;
-        frame_step_ = av_rescale_q( 1, AVRational { 1, fps_ }, tb );
+        frame_step_ = vfr_ ? 1 : av_rescale_q( 1, AVRational { 1, fps_ }, tb );
         if ( frame_step_ < 1 )
             frame_step_ = 1;
-        std::cout << "enc: stream time_base " << tb.num << '/' << tb.den << ", pts step " << frame_step_ << "\n";
+        if ( vfr_ )
+            std::cout << "enc: stream time_base " << tb.num << '/' << tb.den << " (VFR: pts from dequeue times)\n";
+        else
+            std::cout << "enc: stream time_base " << tb.num << '/' << tb.den << ", pts step " << frame_step_ << "\n";
         if ( tcp_pull )
         {
             std::cout << "enc: tcp pull streaming " << w_ << 'x' << h_ << " h264 (mpegts) on port " << port_ << '\n';
@@ -397,6 +412,7 @@ void NetEncoder::serve()
             fc_ = fc;
             st_ = st;
             pts_ = 0;
+            ts_base_ = -1;  // M4: VFR pts restart from zero per session
         }
 
         // Park until quit or a write error; UDP writes do not block on a
@@ -426,7 +442,7 @@ void NetEncoder::serve()
         ::close( lfd );
 }
 
-void NetEncoder::publish( int tensor_fd, int acquire_fence_fd )
+void NetEncoder::publish( int tensor_fd, int acquire_fence_fd, int64_t ts_us )
 {
     if ( quit_.load() )
     {
@@ -451,6 +467,7 @@ void NetEncoder::publish( int tensor_fd, int acquire_fence_fd )
     }                            // stale fence
     tensor_fd_ = tensor_fd;      // RGA source for this frame
     acq_fd_ = acquire_fence_fd;  // consumed by send_frame
+    ts_us_ = ts_us;              // M4: dequeue time for the VFR pts
     if ( !send_frame( fc_, st_ ) )
     {
         error_.store( true );
@@ -533,7 +550,14 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
     fr->format = AV_PIX_FMT_DRM_PRIME;
     fr->width = w_;
     fr->height = h_;
-    fr->pts = static_cast<int64_t>( pts_ );
+    // M4: CFR — sequential pts in the codec time base; VFR — real dequeue
+    // times (µs -> 1/90000 ticks), per-session base, fallback to a 25 fps
+    // grid if the pipeline did not provide a timestamp.
+    const int64_t fpts = vfr_
+            ? ( ts_us_ >= 0 ? av_rescale( ts_us_ - ( ts_base_ < 0 ? ( ts_base_ = ts_us_ ) : ts_base_ ), 90000, 1000000 )
+                            : static_cast<int64_t>( frames_sent_ ) * 3600 )
+            : static_cast<int64_t>( pts_ );
+    fr->pts = fpts;
     fr->data[0] = reinterpret_cast<uint8_t*>( &desc );
     fr->buf[0] = av_buffer_create( reinterpret_cast<uint8_t*>( &desc ), sizeof( desc ), noop_free, nullptr, 0 );
     if ( !fr->buf[0] )
@@ -566,7 +590,7 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
             return false;
         }
         pkt->stream_index = st->index;
-        pkt->pts = pkt->dts = static_cast<int64_t>( pts_ * frame_step_ );
+        pkt->pts = pkt->dts = fpts * frame_step_;
         const int r = av_interleaved_write_frame( fc, pkt );
         av_packet_unref( pkt );
         if ( r < 0 )
@@ -578,5 +602,6 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
         }
     }
     ++pts_;
+    ++frames_sent_;
     return true;
 }

@@ -33,7 +33,10 @@ public:
 
     // Called once per frame from the pipeline loop. tensor_fd is the
     // dma-buf of the NPU input tensor (RGB888, w x h); boxes are drawn.
-    void publish( int tensor_fd, int acquire_fence_fd = -1 );
+    // M4: ts_us is the dequeue timestamp in microseconds from pipeline
+    // start — the pts source in follow-source mode (--net-fps 0, VFR);
+    // ignored in the fixed-fps mode.
+    void publish( int tensor_fd, int acquire_fence_fd = -1, int64_t ts_us = -1 );
 
 private:
     void serve();
@@ -60,6 +63,15 @@ private:
     int acq_fd_ = -1;          // draw fence fd, consumed by RGA in send_frame
     int64_t frame_step_ = 1;   // pts increment in the muxer's time base
     uint64_t pts_ = 0;
+    // M4 follow-source (--net-fps 0): pts stamped from the real dequeue
+    // times. ts_us_ arrives with publish(); ts_base_ is the session start
+    // (pts restart from zero when a new viewer connects). frames_sent_
+    // gates the destructor drain in both modes (pts_ alone would be 0
+    // in VFR and skip the flush).
+    bool vfr_ = false;
+    int64_t ts_us_ = -1;
+    int64_t ts_base_ = -1;
+    uint64_t frames_sent_ = 0;
     int model_w_ = 0, model_h_ = 0;  // NPU tensor geometry (RGB888)
     int band_top_ = 0, band_h_ = 0;  // visible letterbox band in the tensor
     int vstride_ = 0;  // NV12 ver stride (16-aligned h), set in the ctor

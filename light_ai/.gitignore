@@ -21,3 +21,8 @@ dataset_dusk/
 artifacts/
 misc/preds_*.csv
 misc/boxlog_*.csv
+
+# dataset dumps (calibration/oracle inputs, ~100 MB+)
+dataset/
+dataset_night2/
+dataset_*.tgz

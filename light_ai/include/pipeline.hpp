@@ -1,7 +1,15 @@
 #pragma once
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <vector>
 #include "camera_v4l2.hpp"
+#include "yolo_postprocess.hpp"
 #include "mpp_decoder.hpp"
 #include "rga_resizer.hpp"
 #include "rknn_engine.hpp"
@@ -13,7 +21,7 @@
 struct Config
 {
     std::string device = "/dev/video20";
-    std::string model = "./misc/yolov5s_relu_int8_mmse.rknn";
+    std::string model = "./misc/yolov5s_relu_int8_mmse_v5.rknn";
     //int cam_w = 1920, cam_h = 1080;
     int cam_w = 1280, cam_h = 960;
     // Two-pass RGA kicks in only when the source exceeds 8x the model input
@@ -29,8 +37,13 @@ struct Config
     float conf_thr = 0.25f;
     float iou_thr = 0.45f;
     // NPU core selection (M2.5): 0 = AUTO (runtime default, no call),
-    // 1 = core 0, 3 = cores 0+1, 7 = cores 0+1+2 (rknn_set_core_mask).
+    // 1/2/4 = core 0/1/2, 3 = cores 0+1, 7 = cores 0+1+2
+    // (rknn_set_core_mask). Ignored when pool > 1 (the pool pins its own).
     int core = 0;
+    // M4: context pool. 0/1 = the single-context path (byte-identical
+    // baseline); 3 = three engines on one model, pinned one per NPU core,
+    // inference moved to worker threads and overlapped with the rest.
+    int pool = 0;
     // Model input size is NOT a config option: it is read from the model
     // itself (input_attr) after setup_io. A --mw/--mh flag could only
     // desynchronize RGA from the real tensor geometry.
@@ -38,7 +51,10 @@ struct Config
     // M3.5 phase A0: raw preview server (RGB888 tensor -> NUT over TCP).
     bool net = false;
     int net_port = 1234;
-    int net_fps = 25;  // pacing of the preview stream, FPS
+    // Pacing of the preview stream, FPS. 0 = follow the source: the
+    // encoder stamps pts from the dequeue times (VFR), night ~25, day
+    // up to 30 — no ctx rebuild, no fixed 25 ceiling.
+    int net_fps = 25;
     // M3.5 phase B: h264_rkmpp + MPEG-TS instead of raw NUT. --net-h264.
     bool net_h264 = false;
     int net_bitrate = 12000;  // kbps, --net-bitrate
@@ -54,6 +70,7 @@ class Pipeline
 {
 public:
     explicit Pipeline( const Config& cfg );
+    ~Pipeline();  // stops the workers before the engines die
     int run();
 
 private:
@@ -62,7 +79,12 @@ private:
     std::string cam_node_;
     MppDecoder dec_;
     RgaResizer rga_;
-    RknnEngine npu_;
+    // M4: context pool. npus_[0] IS the legacy single-context engine;
+    // --pool 3 loads the model three times, one engine per NPU core.
+    // The vector never reallocates after the ctor, so &npus_[k] stays
+    // valid for the whole session.
+    std::vector<RknnEngine> npus_;
+    int npool_ = 1;
     int aux_fd_ = -1;
     int model_w_ = 0;
     int model_h_ = 0;  // taken from the model, not from flags
@@ -81,4 +103,38 @@ private:
     DetList dets_raw_;
     DetList dets_;
     GpuBoxList boxes_;
+
+    // --- M4: context-pool machinery (active only with --pool 3) ---
+    // A slot is a three-state cell: FREE -> QUEUED (main dispatches a
+    // frame) -> DONE (worker finished infer + postprocess) -> FREE
+    // (main published). One slot per engine; the ring depth equals the
+    // pool size, publish-before-reuse keeps tensor ownership safe and
+    // frame order strictly sequential (BoxSmoother sees the legacy order).
+    struct Slot
+    {
+        RknnEngine* eng = nullptr;
+        DetList dets;                    // worker-side postprocess output
+        int frame = -1;                  // global frame index (logs)
+        int64_t ts_us = -1;              // dequeue time, µs from start (VFR pts)
+        bool rga_ok = false;             // captured at dispatch
+        bool npu_ok = false;             // worker verdict, read at publish
+        float lb_top = 0, lb_h = 0;      // letterbox geometry at dispatch
+        double cam_ms = 0, dec_ms = 0, rga_ms = 0, infer_ms = 0;
+        std::mutex mx;
+        std::condition_variable cv;
+        enum St : uint8_t { FREE, QUEUED, DONE } st = FREE;
+    };
+    std::array<Slot, 3> slots_ {};
+    std::vector<std::thread> workers_;   // one per pooled engine
+    std::atomic<bool> quit_ { false };
+    int pub_slots_[3] = { 0, 0, 0 };     // FIFO of slots awaiting publish
+    int pub_head_ = 0;
+    int pub_n_ = 0;
+
+    void worker_loop( int slot );
+    int publish_oldest();                // returns 1 if the frame was valid
+    void dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok,
+            double cam_ms, double dec_ms, double rga_ms );
+    void cal_dump_maybe( RknnEngine& e, int frame_idx );  // shared by both paths
+    void pool_discard();                 // drop pending slots on camera recovery
 };

@@ -413,6 +413,71 @@ Open items:
   CMake tool target or keep as disposable (decide on next tools/
   pass).
 
+## Pool oracle verification (2026-11-01): M5 pool correctness vs RKNNLite
+
+Tool: tools/oracle_check.py (README, Scripts). Inputs: --dump-cal PPM
+dumps + the run's --box-log CSV; verdict PASS/FAIL. The oracle runs the
+pipeline built-in model (misc/yolov5s_relu_int8_mmse.rknn; v5 untouched)
+in a separate RKNNLite instance, decodes with tools/postprocess, converts
+to scene coordinates and matches the box-log "raw" lines of the SAME run.
+
+Calibration chain (each link verified independently):
+- feed recipe: raw uint8 + img[None], NO data_format kwarg (the
+  save_board_csv.py path); RKNNLite silently returns None on a 3-dim
+  input or a rejected kwarg — see README [Platform constraints],
+  RKNNLite note.
+- harness anchor: the CAL variant (v2 + gamma 2.0 on a dataset_mix
+  frame) reproduces misc/board_preds.csv to the 4th decimal
+  (cls 56, conf 0.8585, box 216.9/392.2);
+- geometry: 960p working mode, s = 0.5, lb_top = 80 — measured live
+  by scanning each dump for the gray-128 letterbox rows (80 top /
+  80 bottom), not taken from config.
+
+Dump/frame mapping (learned the hard way): --dump-cal numbering
+follows the FRAME counter, not the dump slot — with --cal-interval 40
+the three dumps of each run are frames 0/40/80 of that same run.
+Best-frame matching (per-dump argmax over the log frames of the mean
+class-matched IoU; scores 0.996-0.999) makes the oracle robust to any
+--cal-interval.
+
+Results (both PASS):
+
+| run | matched | unmatched | phantoms | max px delta | max conf delta |
+|---|---|---|---|---|---|
+| base (600 frames, cal-interval 40) | 7/8 | 0 | 0 | 0.45 px | 0.0002 |
+| pool (3 workers, same protocol) | 9/11 | 0 | 0 | 4.18 px | 0.0003 |
+
+Reference boxes = the run's own box-log lines on the matched frames;
+unmatched counts only confident boxes (BORDER_CONF = 0.35).
+
+Residuals, all one class: cls 60 (dining table) at conf 0.26-0.28 —
+the box is present in the NPU raw log, absent in the Lite decode.
+Attribution: fp16 dec-graph divergence at the 0.25 threshold edge,
+not quantization and not the pool. No confident detection was ever
+unmatched; zero phantoms on both runs (the pool's core claim: no
+spurious detections).
+
+Verdict: the M5 worker pool is detection-correct. On the matched
+frames the pool output reproduces a single-context NPU path to
+dconf <= 0.0003 with IoU >= 0.94 — deeper than the NPU-vs-Lite gap
+itself. Throughput (CORRECTED 11-01 late by the pool1/pool3 wall-clock A/B):
+pool throughput is UNCHANGED vs pool1 (source-bound ~20 FPS both);
+45.9 ms is the in-flight window latency (~3x15.2), not per-frame
+cost.
+
+Open notes:
+- oracle TODO: class-aware NMS on the decode side — not needed at the
+  current agreement level; revisit if scenes produce cross-class
+  overlaps near the threshold.
+- the oracle covers the dump window (3 frames per run by default);
+  for routine checks raise --cal / --cal-interval as needed.
+- pool-mode rga timing: the cal-dump file I/O is counted inside
+  rga_ms (ms(t3,t3b)), unlike the single path — irrelevant without
+  --cal, keep in mind for pool rga A/Bs.
+- known accepted races (no live path reaches them today): the
+  destructor drains the ring only via run()'s tail; and ts_base_
+  reset in serve() vs send_frame() read (int64 write, benign).
+
 ## Pure-infer figure registry (reconcile, M2.6 (c))
 
 Working formula: prod_shown_infer ~= pure_infer + DDR contention +
@@ -432,3 +497,4 @@ are the pure figures; prod steady-state [timing] figures are NOT pure
 | 30.0 ms (--core 7) | mask A/B, steady | int8 mmse, 960p | prod | 10-30 | PROD steady-state |
 | 22.07 ms | night session [timing] | int8_mmse | prod, night | 10-30 | VERIFIED clean repeat (bench_npu 200 iters, cores=1, quiet 11-01 12:51, dataset_mix frame); session 24.0 ms = noisy read; mmse ~= v3 (22.07 vs 22.06) |
 | 22.06 ms | day A/B [timing] | int8, 960p | prod | 11-01 | VERIFIED clean repeat (bench_npu 200 iters, cores=1, quiet 11-01 12:49); morning 24.5 ms = noisy first read; prod delta +34% (29.5 vs 22.06), "~7 ms DDR" note consistent |
+| 45.9 ms per 3 in-flight frames | M5 pool live A/B | int8_mmse, 960p | prod, 3 workers | 11-01 | CORRECTED 11-01 late: this is the in-flight WINDOW LATENCY (~3x15.2), not a per-frame cost; wall-clock throughput pool3 == pool1 (600 frames: 30.73 vs 30.60 s, both source-bound ~20 FPS; user-CPU 18.6 vs 10.5 s — 3 threads busy); [timing] sum/FPS overcounts in pool mode (the cam wait of frame k overlaps the compute of k-2, ~46 ms double-counted) — take FPS from wall clock until the accounting fix |

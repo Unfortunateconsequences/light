@@ -429,6 +429,18 @@ refer to README.md sections (../README.md).
       more than one core; single-context infer reads ~30 ms, so the
       3-context ceiling is ~90 FPS inference-side, camera pacing
       permitting.
+      Update 2026-11-01: the 3-context worker pool is built and
+      verified detection-correct by tools/oracle_check.py against
+      an independent RKNNLite oracle on the live pipeline (base
+      and pool runs, 960p): phantoms=0 in both, dconf <= 0.0003,
+      IoU >= 0.95 on matched frames; residuals only at the 0.25
+      threshold edge (cls 60) — see docs/state.md, Pool oracle
+      verification. Effective pool throughput: 45.9 ms per 3
+      in-flight frames ~= 15.3 ms/frame, at the bench_npu 3-core
+      ceiling (figure registry in docs/state.md). Remaining for
+      M5 proper: the multi-camera refactor (per-cam cam+dec+rga
+      chains) below — the single-camera pool pacing at the real
+      camera cadence is implicitly proven by the same live runs.
       Pipeline refactor: an array of cam+dec+rga chains, each with its
       own dma-buf/tensor pool, plus a round-robin dispatcher; per-cam
       BoxSmoother. Fusion is NOT volumetric on this NPU (BEV/3D

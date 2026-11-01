@@ -147,6 +147,14 @@ post-processing.
                udp://0.0.0.0:1234
 
 ## Platform constraints (learned the hard way, M2-prep)
+
+**VFR encoder pitfall (M5 follow-source):** `ctx->framerate = 0/1`
+reaches MPP as the auto marker (65535) — rc-fps degenerates, the CBR
+per-frame budget collapses (~183 bits/frame, the stream dries to
+~83 kbps) and the pts step becomes 1 tick. Follow-source must hand
+rate control a nominal fps (25) while pts stay per-dequeue
+(av_rescale µs -> 1/90000 ticks).
+
 - MPP decoder: output frame buffers must be allocated with the height
   aligned to 16 (1080 -> 1088 rows). An exact-size allocation trips the
   `slot_size <= buffer_size` assertion before info_change is ever reported.
@@ -287,7 +295,13 @@ post-processing.
   sanity: obj>0.5 in 2 cells at 40x40 and 3 cells at 20x20 (max obj 0.66),
   the 80x80 head stays quiet — the model reacts to the low-light scene.
 - RKNNLite (python) feeds this model only with a 4-dim input tensor
-  (img[None]); a 3-dim NHWC array raises "need 4dims input".
+  (img[None]); a 3-dim NHWC array raises "need 4dims input" — but a
+  byte-array input given data_format='nhwc' does NOT raise: inference()
+  silently returns None (no exception). Always check for None; never
+  assume a zero-detection run means "no detections". Working recipes:
+  raw uint8 + img[None] with NO data_format kwarg (tools/save_board_csv.py),
+  or float input + data_format='nhwc'. inputs_pass_through, when used,
+  also needs the 4-dim shape.
 - Default resolution is 1280x720: same model input geometry as 1080p
   (identical s, band and T), but single-pass RGA and cheaper MJPEG decode.
 
@@ -455,6 +469,14 @@ the model stays yolov5s @ 640x640. Follow-up: v4 recalibration on a
   frame (per-head box/obj/cls ranges, hot-cell counts). Feeds the model a
   4-dim input (img[None]).
 - tools/save_board_csv.py   — RKNNLite predictions dump (misc/board_preds.csv).
+- tools/oracle_check.py — inference parity check: C++ detections (--box-log
+  "raw" lines) vs an independent RKNNLite oracle over --dump-cal PPM dumps.
+  Feed recipe: raw uint8 + img[None], no data_format kwarg (the
+  save_board_csv.py path, calibrated against misc/board_preds.csv);
+  best-frame matching across --cal-interval (dump numbering follows the
+  FRAME counter, not the dump slot). Usage: oracle_check.py <dump_dir>
+  <box-log.csv>; PASS/FAIL exit code. 2026-11-01 verdict (pool + base):
+  see docs/state.md.
 - tools/ab_run.py — static-frame A/B between two .rknn models over a
   file pattern (RKNNLite): --model, --pattern, --out, --conf; writes
   a per-frame predictions CSV. The v3-vs-v4 day/dusk A/Bs (INT8 build history - docs/state.md) and the
@@ -489,7 +511,13 @@ fresh clone, place the .rknn files next to the executable — the
 Reinstate the prefix only if the ldconfig cache is ever reset.)
 
 Defaults: /dev/video20, 1280x960 MJPEG (since 2026-10-30 — full-frame
-2 Mp, letterbox band 640x480, see the 960p performance section); the model default is the working INT8 model (misc/, see Build); --model overrides it. A missing
+2 Mp, letterbox band 640x480, see the 960p performance section); the model default is the working INT8 model (misc/, see Build); --model overrides it.
+Note (2026-11-01): the Run line above shows int8_mmse_v5 (the working
+model per docs/state.md, INT8 build history), while the pipeline.hpp
+built-in default was yolov5s_relu_int8_mmse.rknn. RESOLVED late
+2026-11-01 (owner call): the built-in default is now
+yolov5s_relu_int8_mmse_v5.rknn — --model still overrides.
+A missing
 configured node (ENOENT) is not fatal: the pipeline falls back to
 find_usb_capture_node() and adopts the winner (startup fallback, M3.8);
 non-ENOENT open errors (EBUSY/EACCES) stay fatal. Options:
@@ -501,6 +529,11 @@ source-bound, M2.5),
 --cal N, --cal-interval K (--cal saves up to N model-input frames into
 dataset/, one every K frames — the int8 calibration dataset collector;
 one frame is ~1.2 MB, so 200 frames are ~240 MB on /tmp's storage).
+--dump-cal <dir> (writes model-input PPM dumps cal_%04d.ppm — the oracle
+input for tools/oracle_check.py; numbering follows the frame counter:
+with --cal-interval K the dumps are frames 0, K, 2K, ...). The dump file
+is created by whoever runs the binary — root/normal-user ownership
+conflicts abort with "calibration dump failed" (see Platform constraints).
 --box-log <path> (per-frame CSV of raw vs smoothed boxes — the
 M3.10 jitter A/B tool; near-zero cost when unset).
 Numeric values are strictly validated (garbage is an error, not a

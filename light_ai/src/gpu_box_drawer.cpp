@@ -320,10 +320,13 @@ bool GpuBoxDrawer::init()
     return true;
 }
 
-bool GpuBoxDrawer::attach_tensor( int tensor_dma_fd, int w, int h, uint32_t stride )
+bool GpuBoxDrawer::attach_slot( int slot, int tensor_dma_fd, int w, int h, uint32_t stride )
 {
-    if ( !ready_ )
+    if ( !ready_ || slot < 0 || slot >= State::kSlots )
         return false;
+    State::SlotImg& si = st_.slot[slot];
+    if ( si.img != EGL_NO_IMAGE_KHR )
+        return true;  // idempotent: the pool attaches each slot once
     make_current();
 
     EGLint iattr[] = { EGL_WIDTH,
@@ -339,43 +342,39 @@ bool GpuBoxDrawer::attach_tensor( int tensor_dma_fd, int w, int h, uint32_t stri
             EGL_DMA_BUF_PLANE0_PITCH_EXT,
             (EGLint)stride,
             EGL_NONE };
-    if ( st_.img != EGL_NO_IMAGE_KHR && st_.destroy_image )
-        st_.destroy_image( st_.dpy, st_.img );
-    st_.img = st_.create_image( st_.dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, ( EGLClientBuffer ) nullptr, iattr );
-    if ( st_.img == EGL_NO_IMAGE_KHR )
+    si.img = st_.create_image( st_.dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, ( EGLClientBuffer ) nullptr, iattr );
+    if ( si.img == EGL_NO_IMAGE_KHR )
     {
-        std::cerr << "drawer: import tensor failed (0x" << std::hex << eglGetError() << std::dec << ")\n";
+        std::cerr << "drawer: import tensor failed (slot " << slot << ", 0x" << std::hex << eglGetError() << std::dec << ")\n";
         return false;
     }
-    if ( st_.tex )
-        glDeleteTextures( 1, &st_.tex );
-    glGenTextures( 1, &st_.tex );
-    glBindTexture( GL_TEXTURE_2D, st_.tex );
+    glGenTextures( 1, &si.tex );
+    glBindTexture( GL_TEXTURE_2D, si.tex );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-    st_.image_target_tex( GL_TEXTURE_2D, (GLeglImageOES)st_.img );
-    if ( st_.fbo )
-        glDeleteFramebuffers( 1, &st_.fbo );
-    glGenFramebuffers( 1, &st_.fbo );
-    glBindFramebuffer( GL_FRAMEBUFFER, st_.fbo );
-    glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, st_.tex, 0 );
+    st_.image_target_tex( GL_TEXTURE_2D, (GLeglImageOES)si.img );
+    glGenFramebuffers( 1, &si.fbo );
+    glBindFramebuffer( GL_FRAMEBUFFER, si.fbo );
+    glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, si.tex, 0 );
     const GLenum fst = glCheckFramebufferStatus( GL_FRAMEBUFFER );
     if ( fst != GL_FRAMEBUFFER_COMPLETE )
     {
-        std::cerr << "drawer: FBO incomplete (status 0x" << std::hex << fst << std::dec << ")\n";
+        std::cerr << "drawer: FBO incomplete (slot " << slot << ", status 0x" << std::hex << fst << std::dec << ")\n";
         return false;
     }
     st_.w = w;
     st_.h = h;
     st_.stride = stride;
-    std::cout << "drawer: tensor attached " << w << 'x' << h << " stride=" << stride
+    std::cout << "drawer: tensor attached (slot " << slot << ") " << w << 'x' << h << " stride=" << stride
               << " (native fence: " << ( st_.native_fence ? "yes" : "no" ) << ")\n";
     return true;
 }
 
-void GpuBoxDrawer::draw( const GpuBox *boxes, int n )
+void GpuBoxDrawer::draw_slot( int slot, const GpuBox *boxes, int n )
 {
     if ( !ready_ || boxes == nullptr || n <= 0 )
+        return;
+    if ( slot < 0 || slot >= State::kSlots || st_.slot[slot].fbo == 0 )
         return;
     if ( n > kMaxBoxes )
         n = kMaxBoxes;
@@ -434,7 +433,7 @@ void GpuBoxDrawer::draw( const GpuBox *boxes, int n )
 
     if ( st_.es3 )
         st_.bind_vao( st_.vao );
-    glBindFramebuffer( GL_FRAMEBUFFER, st_.fbo );
+    glBindFramebuffer( GL_FRAMEBUFFER, st_.slot[slot].fbo );
     glViewport( 0, 0, st_.w, st_.h );
     glUseProgram( st_.prog );
     glDisable( GL_DEPTH_TEST );
@@ -498,18 +497,21 @@ void GpuBoxDrawer::done()
         if ( st_.prog )
             glDeleteProgram( st_.prog );
         st_.prog = 0;
-        if ( st_.fbo )
-            glDeleteFramebuffers( 1, &st_.fbo );
-        if ( st_.tex )
-            glDeleteTextures( 1, &st_.tex );
         if ( st_.vao && st_.del_vao )
             st_.del_vao( 1, &st_.vao );
         st_.vao = 0;
-        if ( st_.img != EGL_NO_IMAGE_KHR && st_.destroy_image )
-            st_.destroy_image( st_.dpy, st_.img );
-        st_.img = EGL_NO_IMAGE_KHR;
-        st_.fbo = 0;
-        st_.tex = 0;
+        for ( auto& si : st_.slot )
+        {
+            if ( si.fbo )
+                glDeleteFramebuffers( 1, &si.fbo );
+            if ( si.tex )
+                glDeleteTextures( 1, &si.tex );
+            if ( si.img != EGL_NO_IMAGE_KHR && st_.destroy_image )
+                st_.destroy_image( st_.dpy, si.img );
+            si.img = EGL_NO_IMAGE_KHR;
+            si.tex = 0;
+            si.fbo = 0;
+        }
         if ( st_.ctx )
         {
             eglMakeCurrent( st_.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );

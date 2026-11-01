@@ -188,14 +188,24 @@ namespace
 
             { "--core",
                     { true,
-                            "NPU cores: 0 auto, 1, 3 (0+1), 7 (0+1+2)",
+                            "NPU cores: 0 auto, 1/2/4 = core 0/1/2, 3 (0+1), 7 (0+1+2); ignored with --pool > 1",
                             []( Config& c, const char* v ) {
                                 int n = 0;
                                 // Exactly the masks set_core_mask() implements: anything else
                                 // silently degrades to the runtime default (auto).
-                                if ( !parse_int( v, &n ) || ( n != 0 && n != 1 && n != 3 && n != 7 ) )
-                                    return value_error( "--core", v, "0|1|3|7" );
+                                if ( !parse_int( v, &n ) || ( n != 0 && n != 1 && n != 2 && n != 3 && n != 4 && n != 7 ) )
+                                    return value_error( "--core", v, "0|1|2|3|4|7" );
                                 c.core = n;
+                                return true;
+                            } } },
+            { "--pool",
+                    { true,
+                            "NPU context pool: 1 = single context (baseline), 3 = one engine per core",
+                            []( Config& c, const char* v ) {
+                                int n = 0;
+                                if ( !parse_int( v, &n ) || ( n != 0 && n != 1 && n != 3 ) )
+                                    return value_error( "--pool", v, "0|1|3" );
+                                c.pool = n;
                                 return true;
                             } } },
 
@@ -211,11 +221,11 @@ namespace
                             } } },
             { "--net-fps",
                     { true,
-                            "preview stream fps 1..120",
+                            "preview stream fps 1..120, 0 = follow the source (VFR pts from dequeue times)",
                             []( Config& c, const char* v ) {
                                 int n = 0;
-                                if ( !parse_int( v, &n ) || n < 1 || n > 120 )
-                                    return value_error( "--net-fps", v, "1..120" );
+                                if ( !parse_int( v, &n ) || n < 0 || n > 120 )
+                                    return value_error( "--net-fps", v, "0..120" );
                                 c.net_fps = n;
                                 return true;
                             } } },

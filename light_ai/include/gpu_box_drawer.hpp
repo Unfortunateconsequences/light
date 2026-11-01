@@ -31,10 +31,21 @@ public:
     // EGL/GBM display + surfaceless GLES3 context + shader + VBO.
     bool init();
     // Imports the NPU tensor dma-buf as an EGLImage-backed FBO.
-    bool attach_tensor( int tensor_dma_fd, int w, int h, uint32_t stride );
+    // M4: slot-keyed; attach_tensor()/draw() keep the single-context
+    // semantics (slot 0), the pool uses attach_slot()/draw_slot().
+    bool attach_slot( int slot, int tensor_dma_fd, int w, int h, uint32_t stride );
+    bool attach_tensor( int tensor_dma_fd, int w, int h, uint32_t stride )
+    {
+        return attach_slot( 0, tensor_dma_fd, w, h, stride );
+    }
     // Async GPU draw: 1-px outlines for all boxes in ONE draw call
-    // (batched VBO, per-vertex color).
-    void draw( const GpuBox *boxes, int n );
+    // (batched VBO, per-vertex color). Switching FBOs between slots is
+    // the only added cost vs the single-tensor path.
+    void draw_slot( int slot, const GpuBox *boxes, int n );
+    void draw( const GpuBox *boxes, int n )
+    {
+        draw_slot( 0, boxes, n );
+    }
     // Blocks until all GPU writes from draw() are visible to CPU/RGA.
     // Native fence (EGL_ANDROID_native_fence_sync) when available,
     // glFinish() otherwise. The fence wait is bounded (100 ms cap) with
@@ -72,12 +83,23 @@ private:
     {
         EGLDisplay dpy = EGL_NO_DISPLAY;
         EGLContext ctx = nullptr;
-        EGLImageKHR img = EGL_NO_IMAGE_KHR;
-        GLuint tex = 0, fbo = 0, prog = 0, vbo = 0, vao = 0;
+        GLuint prog = 0, vbo = 0, vao = 0;
         GLint apos = -1, acol = -1;
         bool es3 = false;  // ES3 context with VAO entry points
         int w = 0, h = 0;
         uint32_t stride = 0;
+
+        // M4: per-slot import cache (context pool). Geometry (w/h/stride)
+        // is shared across slots, only the dma-buf fd differs. Slot 0
+        // serves the single-context path — the legacy attach_tensor()/
+        // draw() semantics stay untouched.
+        enum { kSlots = 3 };  // project rule: unscoped enum, not a static member
+        struct SlotImg
+        {
+            EGLImageKHR img = EGL_NO_IMAGE_KHR;
+            GLuint tex = 0, fbo = 0;
+        };
+        SlotImg slot[kSlots];
         int gbm_fd = -1;  // the GBM device lives on this fd
         void *gbm_dev = nullptr;
         void *dl_gbm = nullptr;

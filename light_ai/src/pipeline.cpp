@@ -25,9 +25,26 @@ namespace
     {
         double cam = 0, dec = 0, rga = 0, infer = 0, enc = 0;  // sums, ms
         int n = 0;
+        // Pool accounting: in pool mode the per-stage sums double-count
+        // the in-flight window overlap (cam wait of frame k vs infer of
+        // frame k-2), so sum -> FPS is wrong; FPS comes from the wall
+        // clock of the whole run instead. CFR (pool 1) keeps the legacy
+        // honest accounting.
+        clk::time_point t0{};  // first frame stamp
+        long total = 0;        // frames since start
+        int pool = 1;          // in-flight frames; 1 = legacy path
+
+        void set_pool( int p )
+        {
+            if ( p > 1 )
+                pool = p;
+        }
 
         void add( double c, double d, double r, double i, double e )
         {
+            if ( total == 0 )
+                t0 = clk::now();
+            ++total;
             cam += c;
             dec += d;
             rga += r;
@@ -42,9 +59,19 @@ namespace
             if ( n == 0 )
                 return;
             const double sum = ( cam + dec + rga + infer + enc ) / n;
-            std::cout << "[timing] " << tag << " cam=" << std::fixed << std::setprecision( 1 ) << cam / n << " dec=" << dec / n
-                      << " rga=" << rga / n << " infer=" << infer / n << " enc=" << enc / n << " | sum=" << sum << " ms -> ~"
-                      << ( sum > 0 ? 1000.0 / sum : 0.0 ) << " FPS\n";
+            if ( pool > 1 )
+            {
+                const double wall = total / std::chrono::duration<double>( clk::now() - t0 ).count();
+                std::cout << "[timing] " << tag << " cam=" << std::fixed << std::setprecision( 1 ) << cam / n << " dec=" << dec / n
+                          << " rga=" << rga / n << " infer=" << infer / n << " enc=" << enc / n << " | sum=" << sum
+                          << " ms (pool window latency, " << pool << " in flight) | wall ~" << wall << " FPS\n";
+            }
+            else
+            {
+                std::cout << "[timing] " << tag << " cam=" << std::fixed << std::setprecision( 1 ) << cam / n << " dec=" << dec / n
+                          << " rga=" << rga / n << " infer=" << infer / n << " enc=" << enc / n << " | sum=" << sum << " ms -> ~"
+                          << ( sum > 0 ? 1000.0 / sum : 0.0 ) << " FPS\n";
+            }
             cam = dec = rga = infer = enc = 0;
             n = 0;
         }
@@ -111,8 +138,15 @@ namespace
 }  // namespace
 
 Pipeline::Pipeline( const Config& cfg )
-  : cfg_( cfg ), cam_( cfg_.cam_w, cfg_.cam_h ), dec_( cfg_.cam_w, cfg_.cam_h ), npu_( cfg_.model.c_str() )
+  : cfg_( cfg ), cam_( cfg_.cam_w, cfg_.cam_h ), dec_( cfg_.cam_w, cfg_.cam_h )
 {
+    // M4: the pool is a startup-time decision; npus_ never grows after
+    // this loop, so the slot pointers stay valid for the whole session.
+    npool_ = cfg_.pool >= 3 ? 3 : 1;
+    npus_.reserve( npool_ );
+    for ( int k = 0; k < npool_; ++k )
+        npus_.emplace_back( cfg_.model.c_str() );
+
     cam_node_ = cfg_.device;
     // Startup fallback for a re-enumerated camera: the configured node
     // may be gone after a replug (verified live: video20 -> video21)
@@ -142,23 +176,43 @@ Pipeline::Pipeline( const Config& cfg )
     {
         throw std::runtime_error( "camera: " + cam_why );
     }
-    if ( npu_.setup_io() != 0 )
+    for ( auto& e : npus_ )
     {
-        throw std::runtime_error( "rknn setup_io failed" );
-    }
-    // M2.5: optional NPU core pinning. Default (0) keeps the runtime's
-    // AUTO behaviour exactly as before — the A/B baseline is untouched.
-    if ( cfg_.core != 0 )
-    {
-        if ( npu_.set_core_mask( static_cast<unsigned>( cfg_.core ) ) != 0 )
+        if ( e.setup_io() != 0 )
         {
-            throw std::runtime_error( "rknn set_core_mask failed" );
+            throw std::runtime_error( "rknn setup_io failed" );
         }
-        std::cout << "npu: core mask 0x" << std::hex << cfg_.core << std::dec << "\n";
+    }
+    // M2.5/M4: core pinning. The single path keeps cfg_.core verbatim
+    // (AUTO by default — the A/B baseline is untouched). The pool pins
+    // its own: one engine per core, via the per-core flags 1/2/4.
+    if ( npool_ == 1 )
+    {
+        if ( cfg_.core != 0 )
+        {
+            if ( npus_[0].set_core_mask( static_cast<unsigned>( cfg_.core ) ) != 0 )
+            {
+                throw std::runtime_error( "rknn set_core_mask failed" );
+            }
+            std::cout << "npu: core mask 0x" << std::hex << cfg_.core << std::dec << "\n";
+        }
+    }
+    else
+    {
+        const int kCores[3] = { 1, 2, 4 };
+        for ( int k = 0; k < npool_; ++k )
+        {
+            if ( npus_[k].set_core_mask( static_cast<unsigned>( kCores[k] ) ) != 0 )
+            {
+                throw std::runtime_error( "rknn set_core_mask failed" );
+            }
+        }
+        std::cout << "npu: pool of " << npool_ << " engines, one per core\n";
+        g_t.set_pool( npool_ );
     }
     // Single source of truth for the model geometry: the model file itself.
     // NHWC layout: dims = {N, H, W, C}, so W is dims[n-2] and H is dims[n-3].
-    const rknn_tensor_attr& ia = npu_.input_attr();
+    const rknn_tensor_attr& ia = npus_[0].input_attr();  // all engines share the model geometry
     if ( ia.n_dims < 4 )
     {
         std::cerr << "pipeline: unexpected input tensor ndims=" << ia.n_dims << '\n';
@@ -167,7 +221,10 @@ Pipeline::Pipeline( const Config& cfg )
 
     // Gray letterbox bars: RGA writes only the visible band (drect), so the
     // 128-fill done here survives every frame.
-    std::memset( npu_.input_data(), 128, npu_.input_size() );
+    // M4: gray letterbox bars on every pooled tensor — RGA writes only
+    // the visible band (drect), so the 128-fill survives every frame.
+    for ( auto& e : npus_ )
+        std::memset( e.input_data(), 128, e.input_size() );
 
     model_w_ = static_cast<int>( ia.dims[ia.n_dims - 2] );
     model_h_ = static_cast<int>( ia.dims[ia.n_dims - 3] );
@@ -217,7 +274,14 @@ Pipeline::Pipeline( const Config& cfg )
     if ( ( preview_ || enc_ ) && !cfg_.cpu_draw )
     {
         drawer_.emplace();
-        if ( !drawer_->init() || !drawer_->attach_tensor( npu_.input_fd(), model_w_, model_h_, static_cast<uint32_t>( model_w_ ) * 3 ) )
+        // M4: one EGLImage per slot, attached once at startup (attach_slot
+        // is idempotent per slot); draw switches FBOs between slots.
+        bool drew_ok = drawer_->init();
+        for ( int k = 0; drew_ok && k < npool_; ++k )
+        {
+            drew_ok = drawer_->attach_slot( k, npus_[k].input_fd(), model_w_, model_h_, static_cast<uint32_t>( model_w_ ) * 3 );
+        }
+        if ( !drew_ok )
         {
             std::cerr << "pipeline: gpu drawer unavailable, RGA fallback\n";
             drawer_.reset();
@@ -254,6 +318,17 @@ Pipeline::Pipeline( const Config& cfg )
             throw std::runtime_error( "pipeline: cannot create dataset/: " + ec.message() );
         }
     }
+    // M4: bind slots to engines, then start the worker threads (pool
+    // only — with a single engine the legacy synchronous path runs).
+    for ( int k = 0; k < npool_; ++k )
+        slots_[k].eng = &npus_[k];
+    for ( int k = 0; k < npool_; ++k )
+    {
+        workers_.emplace_back( [this, k] {
+            worker_loop( k );
+        } );
+    }
+
     cam_.start();
 }
 
@@ -310,6 +385,11 @@ int Pipeline::run()
                     ++reconnects;
                     warmup_left = k_warmup_frames;
                     std::cout << "camera: reconnected on attempt " << a << '\n';
+                    // M4: frames from the dead stream are never published —
+                    // drop the pending slots (their infer may still be in
+                    // flight; wait for DONE, then free without publishing).
+                    if ( npool_ > 1 )
+                        pool_discard();
                     back = true;
                     break;
                 }
@@ -364,48 +444,52 @@ int Pipeline::run()
             continue;
         }
 
+        // ---- M4 pool path: ring of slots, one per engine ----
+        // Publish-before-reuse: when the ring is full, the oldest frame is
+        // published first (waiting for its worker), which frees exactly the
+        // slot RGA is about to overwrite. Frame order stays strictly
+        // sequential (BoxSmoother semantics unchanged); timings move to the
+        // publish step — the trailing g_t.add below runs for the single
+        // path only.
+        if ( npool_ > 1 )
+        {
+            const double cam_ms = ms( t0, t1 );
+            const double dec_ms = ms( t1, t2 );
+            if ( pub_n_ == npool_ )
+                ok += publish_oldest();
+            int slot = -1;
+            for ( int k = 0; k < npool_; ++k )
+            {
+                std::lock_guard<std::mutex> lk( slots_[k].mx );
+                if ( slots_[k].st == Slot::FREE )
+                {
+                    slot = k;
+                    break;
+                }
+            }
+            // Ring depth equals the pool size: after publishing the oldest
+            // frame a FREE slot is guaranteed to exist.
+            Slot& sl = slots_[slot];
+            const auto t3 = clk::now();
+            const bool rga_ok =
+                    rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, sl.eng->input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2 );
+            cal_dump_maybe( *sl.eng, i );
+            const auto t3b = clk::now();
+            const int64_t ts_us = std::chrono::duration_cast<std::chrono::microseconds>( t0 - t_start ).count();
+            dispatch( slot, i, ts_us, rga_ok, cam_ms, dec_ms, ms( t3, t3b ) );
+            continue;
+        }
+
         const bool rga_ok =
-                rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, npu_.input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2 );
+                rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, npus_[0].input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2 );
 
         const auto t3 = clk::now();
 
-        // Calibration dump: P6 PPM of the model input. The only diagnostic
-        // CPU pixel read. --dump-cal writes a single /tmp/cal.ppm; --cal N
-        // saves up to N frames (one every --cal-interval) into dataset/.
-        const bool cal_wanted = cfg_.dump_cal || ( cfg_.cal_frames > 0 && cal_saved_ < cfg_.cal_frames );
-        const bool cal_due = !cal_done_ || ( i - last_cal_ >= cfg_.cal_interval );
-        if ( rga_ok && cal_wanted && cal_due )
-        {
-            const size_t bytes = static_cast<size_t>( model_w_ ) * model_h_ * 3;
-            std::string path = "/tmp/cal.ppm";
-            if ( !cfg_.dump_cal )
-            {
-                std::ostringstream name;
-                name << "dataset/cal_" << std::setw( 4 ) << std::setfill( '0' ) << cal_saved_ << ".ppm";
-                path = name.str();
-            }
-            std::ofstream out( path, std::ios::binary );
-            if ( out && npu_.input_size() >= bytes )
-            {
-                out << "P6\n" << model_w_ << ' ' << model_h_ << "\n255\n";
-                out.write( reinterpret_cast<const char*>( npu_.input_data() ), static_cast<std::streamsize>( bytes ) );
-                if ( cfg_.dump_cal )
-                {
-                    std::cout << "calibration dump: " << path << " (" << model_w_ << 'x' << model_h_ << ")\n";
-                }
-                ++cal_saved_;
-                last_cal_ = i;
-                cal_done_ = true;
-            }
-            else
-            {
-                std::cerr << "calibration dump failed\n";
-                cal_done_ = true;  // do not retry-spam on a broken sink
-            }
-        }
+        cal_dump_maybe( npus_[0], i );
+
         const auto t3b = clk::now();  // cal-dump file I/O is not infer
 
-        const bool npu_ok = rga_ok && ( npu_.run() == 0 );
+        const bool npu_ok = rga_ok && ( npus_[0].run() == 0 );
         const auto t4 = clk::now();
         double enc_ms = 0.0;  // measured below, inside the publish branch
 
@@ -413,7 +497,7 @@ int Pipeline::run()
         {
             // Letterbox geometry from the single source of truth: RgaResizer
             // stored it during the last resize.
-            yolo_postprocess( npu_,
+            yolo_postprocess( npus_[0],
                     cfg_.cam_w,
                     cfg_.cam_h,
                     model_w_,
@@ -490,7 +574,7 @@ int Pipeline::run()
                     // rgb888 — dmesg "invalid function policy").
                     // --cpu-draw forces this path even when the GPU drawer
                     // is up (A/B baseline).
-                    draw_boxes_cpu( static_cast<uint8_t*>( npu_.input_data() ),
+                    draw_boxes_cpu( static_cast<uint8_t*>( npus_[0].input_data() ),
                             model_w_,
                             model_h_,
                             model_w_ * 3,
@@ -503,7 +587,7 @@ int Pipeline::run()
                 // the RGA band crop carries the boxes into the stream.
                 if ( preview_ )
                 {
-                    preview_->publish( static_cast<const uint8_t*>( npu_.input_data() ) );
+                    preview_->publish( static_cast<const uint8_t*>( npus_[0].input_data() ) );
                 }
                 if ( enc_ )
                 {
@@ -511,7 +595,7 @@ int Pipeline::run()
                     // of the tensor (boxes already drawn and synced) and
                     // converts it to NV12 1:1 — no upscale.
                     const auto t5 = clk::now();
-                    enc_->publish( npu_.input_fd(), fence );
+                    enc_->publish( npus_[0].input_fd(), fence );
                     const auto t6 = clk::now();
                     // publish() is synchronous in the pipeline thread:
                     // fence-poll + RGA crop + encode + mux + TCP write.
@@ -524,6 +608,10 @@ int Pipeline::run()
         g_t.add( ms( t0, t1 ), ms( t1, t2 ), ms( t2, t3 ), ms( t3b, t4 ), enc_ms );
     }
 
+    // M4: drain the ring — publish whatever the workers already finished.
+    while ( npool_ > 1 && pub_n_ > 0 )
+        ok += publish_oldest();
+
     const double wall = std::chrono::duration<double>( clk::now() - t_start ).count();
     if ( reconnects > 0 )
     {
@@ -533,4 +621,230 @@ int Pipeline::run()
     std::cout << "Processed " << ok << " frames in " << std::fixed << std::setprecision( 3 ) << wall << " s -> "
               << ( wall > 0 ? ok / wall : 0.0 ) << " FPS\n";
     return ok;
+}
+
+
+// --- M4: context-pool machinery --------------------------------------------
+
+Pipeline::~Pipeline()
+{
+    quit_.store( true );
+    for ( auto& sl : slots_ )
+    {
+        std::lock_guard<std::mutex> lk( sl.mx );
+        sl.cv.notify_all();
+    }
+    for ( auto& t : workers_ )
+        if ( t.joinable() )
+            t.join();
+}
+
+void Pipeline::worker_loop( int slot )
+{
+    Slot& sl = slots_[slot];
+    for ( ;; )
+    {
+        {
+            std::unique_lock<std::mutex> lk( sl.mx );
+            sl.cv.wait( lk, [this, slot] {
+                return quit_.load() || slots_[slot].st == Slot::QUEUED;
+            } );
+            if ( quit_.load() )
+                return;
+        }
+        // Infer WITHOUT holding the slot mutex: the claim scan on the main
+        // thread must not block on a running rknn_run. Plain writes below
+        // are published to the main thread by the lock acquire/release of
+        // the DONE transition.
+        const auto ti0 = clk::now();
+        const bool rga_ok = sl.rga_ok;
+        bool okr = false;
+        if ( rga_ok )
+        {
+            okr = ( sl.eng->run() == 0 );
+            sl.infer_ms = ms( ti0, clk::now() );
+            if ( okr )
+            {
+                yolo_postprocess( *sl.eng, static_cast<float>( cfg_.cam_w ), static_cast<float>( cfg_.cam_h ),
+                        static_cast<float>( model_w_ ), static_cast<float>( model_h_ ), sl.lb_top, sl.lb_h, sl.dets, cfg_.conf_thr,
+                        cfg_.iou_thr );
+            }
+        }
+        else
+        {
+            sl.infer_ms = 0.0;  // legacy: run() is short-circuited on a failed RGA
+        }
+        sl.npu_ok = rga_ok && okr;
+        {
+            std::lock_guard<std::mutex> lk( sl.mx );
+            sl.st = Slot::DONE;
+        }
+        sl.cv.notify_all();
+    }
+}
+
+void Pipeline::dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok, double cam_ms, double dec_ms, double rga_ms )
+{
+    Slot& sl = slots_[slot];
+    {
+        std::lock_guard<std::mutex> lk( sl.mx );
+        sl.frame = frame_idx;
+        sl.ts_us = ts_us;
+        sl.rga_ok = rga_ok;
+        sl.npu_ok = false;
+        sl.cam_ms = cam_ms;
+        sl.dec_ms = dec_ms;
+        sl.rga_ms = rga_ms;
+        sl.lb_top = static_cast<float>( rga_.lb_top() );
+        sl.lb_h = static_cast<float>( rga_.lb_h() );
+        sl.st = Slot::QUEUED;
+    }
+    pub_slots_[( pub_head_ + pub_n_ ) % 3] = slot;
+    ++pub_n_;
+    sl.cv.notify_one();
+}
+
+int Pipeline::publish_oldest()
+{
+    const int ps = pub_slots_[pub_head_];
+    Slot& sl = slots_[ps];
+    std::unique_lock<std::mutex> lk( sl.mx );
+    sl.cv.wait( lk, [&sl] {
+        return sl.st == Slot::DONE;
+    } );
+
+    double enc_ms = 0.0;
+    if ( sl.npu_ok )
+    {
+        // M3.10: EMA smoothing on scene-coord boxes; the raw list is kept
+        // only for the --box-log jitter A/B CSV.
+        smoother_.update( sl.dets, dets_ );
+        smoother_.log_frame( sl.frame, sl.dets, dets_ );
+        // Throttled report: every 15th frame, up to 8 boxes per report.
+        if ( dets_.n > 0 && sl.frame % 15 == 0 )
+        {
+            std::cout << "frame " << sl.frame << ": " << dets_.n << " det(s)\n";
+            for ( int k = 0; k < dets_.n && k < 8; ++k )
+            {
+                const Detection& d = dets_.d[k];
+                std::cout << "  cls=" << kCocoNames[d.cls] << " conf=" << std::fixed << std::setprecision( 2 ) << d.conf << " box=("
+                          << d.x << ',' << d.y << ' ' << d.w << 'x' << d.h << ")\n";
+            }
+        }
+        if ( preview_ || enc_ )
+        {
+            // Boxes mapped to tensor coordinates ONCE for both drawing
+            // paths — the same geometry as the legacy block (det_color).
+            const float s = static_cast<float>( model_w_ ) / cfg_.cam_w;
+            const float lb_top = sl.lb_top;
+            boxes_.clear();
+            for ( int k = 0; k < dets_.n; ++k )
+            {
+                const Detection& d = dets_.d[k];
+                GpuBox b{};
+                b.x0 = d.x * s;
+                b.y0 = d.y * s + lb_top;
+                b.x1 = ( d.x + d.w ) * s;
+                b.y1 = ( d.y + d.h ) * s + lb_top;
+                if ( b.x1 - b.x0 < 2.0f || b.y1 - b.y0 < 2.0f )
+                    continue;
+                det_color( d.cls, b.r, b.g, b.b );
+                b.a = 255;
+                boxes_.push( b );
+            }
+            int fence = -1;  // GPU draw fence, consumed by enc publish
+            if ( drawer_ )
+            {
+                drawer_->draw_slot( ps, boxes_.d.data(), boxes_.n );
+                fence = drawer_->export_fence();
+                if ( preview_ || fence < 0 )
+                {
+                    drawer_->sync_cpu();
+                    if ( fence >= 0 )
+                        ::close( fence );
+                    fence = -1;
+                }
+            }
+            else
+            {
+                draw_boxes_cpu( static_cast<uint8_t*>( sl.eng->input_data() ), model_w_, model_h_, model_w_ * 3, boxes_.d.data(),
+                        boxes_.n );
+            }
+            if ( preview_ )
+            {
+                preview_->publish( static_cast<const uint8_t*>( sl.eng->input_data() ) );
+            }
+            if ( enc_ )
+            {
+                const auto t5 = clk::now();
+                enc_->publish( sl.eng->input_fd(), fence, sl.ts_us );
+                const auto t6 = clk::now();
+                enc_ms = ms( t5, t6 );
+            }
+        }
+    }
+    g_t.add( sl.cam_ms, sl.dec_ms, sl.rga_ms, sl.infer_ms, enc_ms );
+    sl.st = Slot::FREE;
+    sl.frame = -1;
+    lk.unlock();
+    pub_head_ = ( pub_head_ + 1 ) % 3;
+    --pub_n_;
+    return sl.npu_ok ? 1 : 0;
+}
+
+void Pipeline::cal_dump_maybe( RknnEngine& e, int frame_idx )
+{
+    // Calibration dump: P6 PPM of the model input. The only diagnostic
+    // CPU pixel read. --dump-cal writes a single /tmp/cal.ppm; --cal N
+    // saves up to N frames (one every --cal-interval) into dataset/.
+    const bool cal_wanted = cfg_.dump_cal || ( cfg_.cal_frames > 0 && cal_saved_ < cfg_.cal_frames );
+    const bool cal_due = !cal_done_ || ( frame_idx - last_cal_ >= cfg_.cal_interval );
+    if ( !cal_wanted || !cal_due )
+        return;
+    const size_t bytes = static_cast<size_t>( model_w_ ) * model_h_ * 3;
+    std::string path = "/tmp/cal.ppm";
+    if ( !cfg_.dump_cal )
+    {
+        std::ostringstream name;
+        name << "dataset/cal_" << std::setw( 4 ) << std::setfill( '0' ) << cal_saved_ << ".ppm";
+        path = name.str();
+    }
+    std::ofstream out( path, std::ios::binary );
+    if ( out && e.input_size() >= bytes )
+    {
+        out << "P6\n" << model_w_ << ' ' << model_h_ << "\n255\n";
+        out.write( reinterpret_cast<const char*>( e.input_data() ), static_cast<std::streamsize>( bytes ) );
+        if ( cfg_.dump_cal )
+        {
+            std::cout << "calibration dump: " << path << " (" << model_w_ << 'x' << model_h_ << ")\n";
+        }
+        ++cal_saved_;
+        last_cal_ = frame_idx;
+        cal_done_ = true;
+    }
+    else
+    {
+        std::cerr << "calibration dump failed\n";
+        cal_done_ = true;  // do not retry-spam on a broken sink
+    }
+}
+
+void Pipeline::pool_discard()
+{
+    while ( pub_n_ > 0 )
+    {
+        Slot& sl = slots_[pub_slots_[pub_head_]];
+        std::unique_lock<std::mutex> lk( sl.mx );
+        // The worker may still be mid-infer on this slot: wait for DONE
+        // (rknn_run always completes; quit_ is not set here), then free
+        // the slot without publishing.
+        sl.cv.wait( lk, [&sl] {
+            return sl.st != Slot::QUEUED;
+        } );
+        sl.st = Slot::FREE;
+        sl.frame = -1;
+        lk.unlock();
+        pub_head_ = ( pub_head_ + 1 ) % 3;
+        --pub_n_;
+    }
 }
