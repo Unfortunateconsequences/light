@@ -240,7 +240,7 @@ post-processing.
 - int8-quantized yolov5s_relu_int8.rknn: built with rknn-toolkit2 2.5.0
   on Colab. v1: calibrated on 50 night frames (--cal 50 --cal-interval 4);
   v2: recalibrated on dataset_mix (25 day + 25 night frames) —
-  see docs/state.md (INT8 vs FP32 validation). v3 (night A/B done, day A/B pending; superseded as the
+  see docs/state.md (INT8 vs FP32 validation). v3 (night A/B done, day A/B vs fp16 done 2026-11-01; superseded as the
   working model by int8_mmse, 2026-10-30):
   recalibrated on 60 fresh day-4 daytime frames with mean=0/std=255 ->
   canonical input scale 1/255 (0.00392157) — see M2.4.
@@ -251,10 +251,15 @@ post-processing.
   identical to v3 (~29.5-30.3 ms, one NPU core either way), but
   detections steadier — cup and dining table present in nearly every
   60-frame block vs episodic on v3; working conf 0.25. Night A/B for
-  mmse: pending (M2.6).
+  mmse: done 2026-10-30 (M2.6 closed, EQUAL vs v4;
+  see docs/state.md).
   v4 (2026-10-30): mmse on the fresh 960p daytime dump (dataset_day3,
   50 of 100 frames); day, dusk and night A/Bs vs v3 — equal (see docs/state.md INT8 build history; night includes one isolated lost detection at
   n2_cal_0040).
+  Day A/B vs fp16 (2026-11-01): CLOSED, four-way
+  (v3/mmse/v4/fp16) on the restored 960p scene: v3 = the
+  fidelity line, mmse/v4 = the recall line (cup boost,
+  bowl/vase cost); full record in docs/state.md.
   MmseQuant2 is memory-hungry: 50 samples fit in 12 GB, 200 OOM. Outputs
   are int8 (per-channel scale/zp) — RknnEngine requests fp16 conversion
   via set_io_mem, the runtime dequantizes into the zero-copy buffer.
@@ -434,7 +439,8 @@ within noise), enc 1.0-1.4 with a viewer attached; sum 49.5-50.2 ms
 finding: see Platform constraints (NPU multi-core) and M2.5. Lighter
 models are REJECTED by owner decision 2026-10-30 (quality first) —
 the model stays yolov5s @ 640x640. Follow-up: v4 recalibration on a
-960p dump — M2.6.
+960p dump — M2.6, done 2026-10-30 (docs/state.md,
+  INT8 build history).
 
 ## Scripts
 - scripts/set_governors.sh — pins CPU/NPU/DDR governors to

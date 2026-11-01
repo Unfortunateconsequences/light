@@ -83,7 +83,8 @@ Status 2026-10-30 (v3-vs-v4 A/B):
   v3-equivalent except one isolated lost detection. M2.6 (d) is
   closed as INT8-vs-INT8. The live night session (mmse vs v4)
   ran the same evening: EQUAL — mmse confirmed as the working
-  model. Still open: the M2.4-b (a) day A/B vs fp16.
+  model. The M2.4-b (a) day A/B vs fp16: CLOSED
+  2026-11-01 (four-way; record appended below).
 - Working-model decision (owner, 2026-10-30 evening): int8_mmse
   STAYS the working model — steadier at night (49/50 coverage, no
   losses) and proven across the live sessions. v4 is kept as the
@@ -109,6 +110,41 @@ Status 2026-10-30 (v3-vs-v4 A/B):
   both. v4 note: empty frame 0 (cold-start miss) — second
   early-frame collapse pattern after M2.4 v3/vase. Decision
   unchanged: mmse stays the working model.
+- Day A/B vs fp16 (2026-11-01, M2.4-b (a) CLOSED — four-way on
+  the restored 960p scene: v3, mmse, v4, fp16 reference; 600
+  frames each, conf 0.25, static scene. Bottle and bowl are
+  new scene objects — the composition differs from the
+  pre-weekend day records; internal A/B validity intact):
+  * Performance: fp16 infer 29.7-30.4 ms vs ~24.5 int8 (+21%);
+    the pipeline stays camera-bound at ~25 FPS for all four —
+    the fp16 reference costs nothing end-to-end.
+  * v3 tracks the reference tightly: chair 0.868 vs 0.868,
+    bottle/bowl within 0.02, vase 29% frames vs 50% — the only
+    int8 line that follows fp16 on small objects.
+  * mmse-branch signature (mmse and v4 share zp/scale
+    0.00436174): bowl under-scored 0.326/0.329 vs 0.480
+    (identical gap in both), vase near-absent 3%/1% vs 50% —
+    calibration-branch properties, not per-model quirks.
+  * cup recall: mmse 90% frames vs 13% fp16 (v4 54%, v3 6%),
+    same real box ~(470,639) — the mmse score band 0.26-0.34
+    holds above the 0.25 threshold where fp16 dips below.
+    Recall boost, not a phantom.
+  * v4 extras: bottle 0.497 (lowest of the four, -0.06 vs the
+    reference); cold start weak but not empty (frame 0: one
+    chair det 0.75 vs six dets at fp16) — the empty-frame-0
+    pattern did not repeat on the day scene; zero anomalous
+    frames.
+  * One-offs: v3 single-frame cls13 phantom (0.358); fp16 four
+    phantom-burst frames (63, 68, 69, 556; the (456,564)
+    region) driving its block wobble 4.45-5.33 det/frame.
+  * VERDICT: the night equivalence (mmse == v3) does not carry
+    to the day scene with small objects. Two int8 lines with
+    distinct trade-offs: v3 = fidelity (closest to the
+    reference, loses cup), mmse/v4 = recall (cup boost,
+    bowl/vase cost). Owner flag: small-object fidelity
+    matters -> v3; recall on real small objects matters ->
+    mmse. Working-model decision unchanged (mmse) pending
+    the owner's call.
 
 ## INT8 vs FP32 validation (2026-10-26, yolov5s_relu_int8_v2)
 
