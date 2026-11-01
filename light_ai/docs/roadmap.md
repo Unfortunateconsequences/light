@@ -47,7 +47,7 @@ refer to README.md sections (../README.md).
       model since 2026-10-30 — see the int8 notes in Platform
       constraints); (c) further
       deferred steps: transcribe from the Colab notebooks.
-- [ ] M2.6: v4 recalibration under the 1280x960 pipeline + mmse A/B
+- [x] M2.6: v4 recalibration under the 1280x960 pipeline + mmse A/B — CLOSED 2026-11-01 (last sub-item (c) done; see state.md registry)
       (plan fixed 2026-10-30). Quality-first framing: lighter models
       (yolov5n, 512x512) REJECTED by owner decision — see the 960p
       section; one model = one NPU core (Platform constraints), so
@@ -59,8 +59,7 @@ refer to README.md sections (../README.md).
       build history);
       (b) DONE 2026-10-30: three-way A/B (v3/v4/int8_mmse) on the
       day, dusk and night dumps within one session — see docs/state.md (INT8 build history);
-      (c) reconcile bench_npu 15.4 ms@012 against the single-core
-      finding (parallel-contexts hypothesis -> M5);
+      (c) DONE 2026-11-01: bench_npu 15.67 ms @7 reproduces 15.4 @012 within 2% — outlier explained, not an artifact; parallel-contexts gain 1.40x confirmed vs 22.06 @1 (same session, quiet); integration remains M5;
       (d) DONE 2026-10-30 (INT8-vs-INT8): night A/B on dataset_mix,
       gamma 2.0, conf 0.18 — v4 == v3 except one isolated lost
       detection (n2_cal_0040; details in docs/state.md (INT8 build history).

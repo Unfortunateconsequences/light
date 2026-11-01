@@ -351,7 +351,7 @@ are the pure figures; prod steady-state [timing] figures are NOT pure
 
 | Figure | Source / tool | Model, era | Conditions | Date | Status |
 |---|---|---|---|---|---|
-| 15.4 ms @012 | tools/bench_npu | int8, 720p era | isolated bench, governors perf | 10-25 | OUTLIER - unexplained vs 22.5; the open reconcile item (M2.6 (c) -> M5) |
+| 15.67 ms @7 | tools/bench_npu | int8, 960p | isolated bench, quiet | 11-01 | RECONCILES 15.4 @012 (10-25, 720p era): reproduced within 2%, resolution-independent; 3-core parallel gain 1.40x real (15.67 vs 22.06 @1); M2.6 (c) closed; pipeline-side mask gain <=2.5 ms stays a separate M5 integration note |
 | 18.1 / 22.0 @2/1 | tools/bench_npu, same run | int8, 720p era | same | 10-25 | scaling data only |
 | 21.2 ms @012 | M2.5 steady [timing] | int8 (v2 era), 720p | in-pipeline; CPU-governor-dependent (degrades to ~25.1-26.0 after idle) | 10-26/27 | OLDER SETUP - do not cite outside M2.5 context |
 | 25.1 ms (AUTO) | M2.5 steady [timing] | int8 (v2 era), 720p | in-pipeline | 10-26 | OLDER SETUP |

@@ -234,7 +234,7 @@ post-processing.
   1.10.6 etc.) belong to other components, not the RKNN runtime.
   Multi-core throughput comes from parallel contexts, one per core
   (the M5 pattern); bench_npu's 15.4 ms@012 is consistent with that
-  reading — to reconcile in M2.6.
+  reading — reconciled 2026-11-01: 15.67 ms @7 reproduces 15.4 @012 within 2% (see docs/state.md registry).
 - yolov5 .rknn outputs are native fp16 (float16, NCHW) — no CPU-side
   dequantization needed; the lite-runtime wraps them as float32.
 - int8-quantized yolov5s_relu_int8.rknn: built with rknn-toolkit2 2.5.0
