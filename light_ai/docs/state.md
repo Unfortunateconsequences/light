@@ -46,7 +46,7 @@ Toolkit facts (Colab side):
   dequant scale. RknnEngine already rewrites the output attr to
   FLOAT16 so the runtime dequantizes into the zero-copy buffer
   (see RknnEngine) — postprocess stays untouched; the "outputs
-  are native fp16" note above refers to non-quantized builds.
+  are native fp16" note lives in README (Platform constraints) and refers to non-quantized builds.
 - onnx source: yolov5s_relu.onnx, 28.9 MB, wget from
   ftrg.zbox.filez.com (link alive on 2026-10-30).
 - Calibration dumps are duplicated to Drive; artifacts live in
@@ -67,7 +67,7 @@ Status 2026-10-30 (v3-vs-v4 A/B):
 - Verdict: v4 == v3 on the daytime and dusk profiles; the mean
   dusk score is even slightly higher for v4 (0.491 vs 0.478).
 - Note: these are INT8-vs-INT8 A/Bs; the v3-vs-fp16 day A/B of
-  M2.4-b (a) stays open.
+  M2.4-b (a) is CLOSED 2026-11-01, see below.
 - Night (dataset_mix, 50 frames, --gamma 2.0, conf 0.18;
   v3/v4/mmse): 102/106/98 detections over 48/47/49 of 50 frames —
   no night blindness in any version. IoU v3-vs-v4: 98 matched,
@@ -96,7 +96,7 @@ Status 2026-10-30 (v3-vs-v4 A/B):
   mean conf 0.827 vs 0.832; potted plant in every frame both,
   mean conf 0.670 vs 0.719; vase 4% frames both (mmse scores it
   higher: 0.413/0.571 vs 0.285/0.345); zero anomalous frames in
-  either run. Infer on the night camera = 24 ms, same as day —
+  either run. Infer on the night camera = ~22 ms, same as day —
   no night NPU penalty. First two blocks (warmup tail, vase
   fading at mmse start) are excluded, per M2.4 protocol.
 - Conf-0.18 control (same evening, 240 frames each, static
@@ -115,7 +115,7 @@ Status 2026-10-30 (v3-vs-v4 A/B):
   frames each, conf 0.25, static scene. Bottle and bowl are
   new scene objects — the composition differs from the
   pre-weekend day records; internal A/B validity intact):
-  * Performance: fp16 infer 29.7-30.4 ms vs ~24.5 int8 (+21%);
+  * Performance: fp16 infer 29.7-30.4 ms vs ~22.06 int8 (+35-38%, clean repeat 11-01);
     the pipeline stays camera-bound at ~25 FPS for all four —
     the fp16 reference costs nothing end-to-end.
   * v3 tracks the reference tightly: chair 0.868 vs 0.868,
@@ -341,3 +341,23 @@ Open items:
 - bench_npu_pool.cpp: currently built ad hoc; either promote to a
   CMake tool target or keep as disposable (decide on next tools/
   pass).
+
+## Pure-infer figure registry (reconcile, M2.6 (c))
+
+Working formula: prod_shown_infer ~= pure_infer + DDR contention +
+pacing-stall share. Isolated bench numbers with performance governors
+are the pure figures; prod steady-state [timing] figures are NOT pure
+(they carry the pacing stall inside 'infer').
+
+| Figure | Source / tool | Model, era | Conditions | Date | Status |
+|---|---|---|---|---|---|
+| 15.4 ms @012 | tools/bench_npu | int8, 720p era | isolated bench, governors perf | 10-25 | OUTLIER - unexplained vs 22.5; the open reconcile item (M2.6 (c) -> M5) |
+| 18.1 / 22.0 @2/1 | tools/bench_npu, same run | int8, 720p era | same | 10-25 | scaling data only |
+| 21.2 ms @012 | M2.5 steady [timing] | int8 (v2 era), 720p | in-pipeline; CPU-governor-dependent (degrades to ~25.1-26.0 after idle) | 10-26/27 | OLDER SETUP - do not cite outside M2.5 context |
+| 25.1 ms (AUTO) | M2.5 steady [timing] | int8 (v2 era), 720p | in-pipeline | 10-26 | OLDER SETUP |
+| 22.5 ms (serial, core0) | tools/bench_npu_pool | int8_mmse, 960p | isolated bench, governors perf | 10-31 | CURRENT PURE REFERENCE (960p era) |
+| 29.0-30.3 ms | 960p section, steady [timing] | int8 mmse/v3 | prod, viewer attached | 10-30 | PROD steady-state (not pure) |
+| ~29.5 ms | pool-probe derivation | int8_mmse, 960p | prod | 10-31 | PROD steady-state = pure 22.5 + ~7 ms DDR contention |
+| 30.0 ms (--core 7) | mask A/B, steady | int8 mmse, 960p | prod | 10-30 | PROD steady-state |
+| 22.07 ms | night session [timing] | int8_mmse | prod, night | 10-30 | VERIFIED clean repeat (bench_npu 200 iters, cores=1, quiet 11-01 12:51, dataset_mix frame); session 24.0 ms = noisy read; mmse ~= v3 (22.07 vs 22.06) |
+| 22.06 ms | day A/B [timing] | int8, 960p | prod | 11-01 | VERIFIED clean repeat (bench_npu 200 iters, cores=1, quiet 11-01 12:49); morning 24.5 ms = noisy first read; prod delta +34% (29.5 vs 22.06), "~7 ms DDR" note consistent |

@@ -40,8 +40,8 @@ refer to README.md sections (../README.md).
 - [ ] M2.4-b: model-optimization backlog (reconstructed 2026-10-28;
       the original deferred-step list lived only in the 2026-10-26
       session chat and the Colab notebooks — git carries no other
-      trace): (a) formal day A/B for v3 — the model notes still say
-      "day A/B pending" (night A/B x3 done, see M2.4); (b) MMSE
+      trace): (a) DONE 2026-11-01: formal day A/B for v3 (see the
+      v3-vs-fp16 day A/B in state.md; the prod delta is +34%: 29.5 vs 22.06 verified 2026-11-01); (b) MMSE
       re-quant with a larger sample budget — 50 samples fit the
       Colab 12 GB, 200 OOM (see the M2.4 recipe; an mmse model exists and is the working
       model since 2026-10-30 — see the int8 notes in Platform
