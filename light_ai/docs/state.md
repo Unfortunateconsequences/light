@@ -3,7 +3,7 @@
 The accumulating record that used to live at the end of README.md:
 INT8 build history, INT8 vs FP32 validation and the night-session
 findings (incl. the dataset map). Pointers like [Platform constraints],
-[M2.4], [M2.6] below refer to README.md sections (../README.md); milestone IDs [M2.4], [M2.6] live in roadmap.md alongside this file.
+Section pointers like [Platform constraints] or [INT8 build history] refer to README.md sections (../README.md); milestone IDs like [M2.4] or [M2.6] live in roadmap.md alongside this file.
 
 ## INT8 build history (rknn-toolkit2 2.5.0, Colab)
 
@@ -55,7 +55,7 @@ Toolkit facts (Colab side):
   strides 8/16/32, NMS; input = 3 maps (255,H,W) post-sigmoid)
   and build_v4.py.
 
-Status 2026-10-30 (v3-vs-v4 A/B):
+Status (2026-10-30, updated 2026-11-01): v3-vs-v4 A/B
 - Day (dataset_day2, 50 frames): conf 0.25 — 101 vs 101
   detections; the discrepancies are threshold noise (cls 39,
   scores 0.256/0.259).
@@ -71,7 +71,7 @@ Status 2026-10-30 (v3-vs-v4 A/B):
 - Night (dataset_mix, 50 frames, --gamma 2.0, conf 0.18;
   v3/v4/mmse): 102/106/98 detections over 48/47/49 of 50 frames —
   no night blindness in any version. IoU v3-vs-v4: 98 matched,
-  7 v3-only / 8 v4-only, all in the 0.18-0.24 band EXCEPT ONE:
+  7 v3-only / 8 v4-only (unverified one-offs: totals 102/106 imply v3-only = 4 at matched = 98 — recount from a fresh night A/B before citing), all in the 0.18-0.24 band EXCEPT ONE:
   n2_cal_0040 — v3 cls56 0.3574, mmse cls56 0.3808 (boxes agree
   within ~1 px), v4 sees NOTHING on that frame. A zone trace of
   that object across all 23 n2 frames: detected by v3 20/23,
@@ -116,7 +116,7 @@ Status 2026-10-30 (v3-vs-v4 A/B):
   new scene objects — the composition differs from the
   pre-weekend day records; internal A/B validity intact):
   * Performance: fp16 infer 29.7-30.4 ms vs ~22.06 int8 (+35-38%, clean repeat 11-01);
-    the pipeline stays camera-bound at ~25 FPS for all four —
+    the pipeline stays camera-bound at ~25 FPS for all four (a pacing level, cf. 20 on the 10-30 960p runs — camera switches levels freely) —
     the fp16 reference costs nothing end-to-end.
   * v3 tracks the reference tightly: chair 0.868 vs 0.868,
     bottle/bowl within 0.02, vase 29% frames vs 50% — the only
@@ -178,6 +178,7 @@ Results:
 | 0.25 | 89 | 89 | 86 (96.6%) | 3 | 3 | 0.028 |
 | 0.25 ref / 0.18 int8 | 89 | 98 | 89 (100%) | 0 | 9 | 0.028 |
 | 0.18 | 101 | 98 | 97 (96.0%) | 4 | 1 | 0.028 |
+(matched % = matched / FP32 dets; missed = FP32-only detections, extra = INT8-only)
 
 Conclusions:
 - v2 INT8 == FP32 within noise: mean |dscore| 0.028 at both thresholds, box
@@ -228,7 +229,7 @@ Dataset map (owner's clarification; current as of 2026-10-30):
   pipeline that periodically produced row-tear artifacts.
   Hardest conditions for the model; all gamma probes ran on it.
   All cal_XXXX frame references in this section and in the
-  dark-frame probes point HERE, not to the daytime dumps
+  dark-frame probes point HERE, not to the daytime dumps.
 - dataset_mix/    — calibration dump assembled proportionally
   from day-2 and night-1 frames; THE calibration set of
   int8_v2 / int8_mmse (50 frames: n1_cal_* every 2nd of 50,
