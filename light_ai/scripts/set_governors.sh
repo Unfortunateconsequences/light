@@ -9,6 +9,7 @@ for p in /sys/devices/system/cpu/cpufreq/policy*; do
     echo performance > "$p/scaling_governor"
 done
 echo performance > /sys/class/devfreq/fdab0000.npu/governor
+echo performance > /sys/class/devfreq/fb000000.gpu/governor
 echo performance > /sys/class/devfreq/dmc/governor
 
 echo "== governors =="

@@ -503,8 +503,8 @@ fresh clone, place the .rknn files next to the executable — the
 
 ## Run
     sudo ./build/light_ai \
-        --device /dev/video20 --model ./misc/yolov5s_relu_int8_mmse_v5.rknn --frames 3000 \
-        --net --net-h264 --core 7
+        --device /dev/video20 --frames 3000 \
+        --net --net-h264 --net-fps 0 --pool 3
 
 (LD_LIBRARY_PATH=/usr/local/lib was required earlier; since the
 2026-10-28 rebuild ldconfig resolves /usr/local/lib — ldd verified.
@@ -512,11 +512,11 @@ Reinstate the prefix only if the ldconfig cache is ever reset.)
 
 Defaults: /dev/video20, 1280x960 MJPEG (since 2026-10-30 — full-frame
 2 Mp, letterbox band 640x480, see the 960p performance section); the model default is the working INT8 model (misc/, see Build); --model overrides it.
-Note (2026-11-01): the Run line above shows int8_mmse_v5 (the working
-model per docs/state.md, INT8 build history), while the pipeline.hpp
-built-in default was yolov5s_relu_int8_mmse.rknn. RESOLVED late
-2026-11-01 (owner call): the built-in default is now
-yolov5s_relu_int8_mmse_v5.rknn — --model still overrides.
+Note (2026-11-01, updated 11-02): the Run line relies on the
+built-in default model (yolov5s_relu_int8_mmse_v5.rknn — the working
+model per docs/state.md; --model overrides). M5 standard run:
+--pool 3 (NPU context pool) + --net-fps 0 (VFR follow-source pts);
+--core is ignored with pool > 1 (the pool pins its own masks).
 A missing
 configured node (ENOENT) is not fatal: the pipeline falls back to
 find_usb_capture_node() and adopts the winner (startup fallback, M3.8);
