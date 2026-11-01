@@ -197,10 +197,19 @@ Status (2026-10-30, updated 2026-11-01): v3-vs-v4 A/B
   systematic + vase never caught). Timing: infer 23.9-24.6 (v5)
   vs 29.4-30.5 (fp16) — the int8 gain ~20% live; sum/FPS
   identical (~39.8 ms, ~25.2 FPS) — source-bound. Notes: (a)
-  bottles are NOT seen by either model (fp16 one-off: bottle 0.25
-  at (446,595) is a vase-box duplicate, class flap vase<->bottle
-  at the threshold; bottles likely out of the visible band or too
-  dark — visual check pending, owner); (b) a single enc=4.8 ms
+  CORRECTED by visual check (stream screenshots, same evening):
+  the wide low object at x~378 (62x37 px), detected as "bowl" by
+  both models in 100% of frames, is the BLUE VASE (bowl-shaped,
+  COCO bowl/vase ambiguity) — so the mmse small-object signature
+  above applies to the VASE object: v5 med 0.636 vs fp16 0.727,
+  ~-0.09, presence 100%/100%, same direction as the day four-way
+  (bowl 0.326 vs 0.480), shallower. The tall narrow object at
+  x~444 (24x69 px), labeled "vase" in the table above, is
+  actually the BOTTLE — class confusion vase<->bottle; it is at
+  parity between models. fp16 "bottle" records (4 total, 1% of
+  frames, x~446) are duplicate boxes of the SAME bottle — class
+  flap at the threshold, not a separate object. The true labels:
+  "bowl" row above = blue vase; "vase" row above = bottle; (b) a single enc=4.8 ms
   block in the fp16 run (FPS dipped to 23.6 for one block, next
   block back to 39.7/~25.2) — one-off, not a pattern; (c) the
   fp16 startup log carries "net: tensor stride check:
