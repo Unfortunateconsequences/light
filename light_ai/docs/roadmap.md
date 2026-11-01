@@ -45,7 +45,11 @@ refer to README.md sections (../README.md).
       re-quant with a larger sample budget — 50 samples fit the
       Colab 12 GB, 200 OOM (see the M2.4 recipe; an mmse model exists and is the working
       model since 2026-10-30 — see the int8 notes in Platform
-      constraints); (c) further
+      constraints). Update 2026-11-01: the budget stays capped at
+      50 frames, but the composition changed — int8_mmse_v5 is
+      mmse on a mixed 30-night + 20-day set and is the working
+      model since 2026-11-01 (v4-vs-v5 A/B record in
+      docs/state.md, INT8 build history); (c) further
       deferred steps: transcribe from the Colab notebooks.
 - [x] M2.6: v4 recalibration under the 1280x960 pipeline + mmse A/B — CLOSED 2026-11-01 (last sub-item (c) done; see state.md registry)
       (plan fixed 2026-10-30). Quality-first framing: lighter models
@@ -63,8 +67,12 @@ refer to README.md sections (../README.md).
       (d) DONE 2026-10-30 (INT8-vs-INT8): night A/B on dataset_mix,
       gamma 2.0, conf 0.18 — v4 == v3 except one isolated lost
       detection (n2_cal_0040; details in docs/state.md (INT8 build history).
-      Remaining from (b)+(d): the owner's working-model call
-      (int8_mmse vs v4) and a formal fp16-reference check.
+      Remaining from (b)+(d): the owner's working-model call —
+      MADE: int8_mmse 2026-10-30, superseded by int8_mmse_v5
+      2026-11-01 (v4-vs-v5 night/day A/B, docs/state.md). Still
+      open: a formal fp16-reference check for the current working
+      model (v5) — the four-way day A/B of 2026-11-01 covered
+      v3/mmse/v4 only.
 - [x] M2.4: int8 quantization — CLOSED 2026-10-26 on v3 (day-4
       daytime recalibration). v3 recipe: calibrated on 60 fresh day-4
       daytime frames, quant config mean=0/std=255 -> canonical input scale

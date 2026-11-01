@@ -13,7 +13,8 @@ Versions in misc/ (build lineage):
 - yolov5s_relu_int8.rknn — v1: default KLD quantization, mixed
   calibration; superseded (night ALARM — see M2.4).
 - yolov5s_relu_int8_mmse.rknn / _v2.rknn — mmse, 50 frames
-  (dataset_mix); the working model since 2026-10-30.
+  (dataset_mix); the working model 2026-10-30 -> 2026-11-01,
+  superseded by int8_mmse_v5 (see the v5 record below).
 - yolov5s_relu_int8_v3.rknn — mmse. The build records disagree:
   one history notes a 6000-frame evening dump
   (cal_evening_6000.tgz), M2.4 records 60 fresh day-4 daytime
@@ -24,6 +25,10 @@ Versions in misc/ (build lineage):
   (dataset_day3: 50 frames, every 2nd of 100). Day, dusk and night
   A/Bs vs v3 — equal (2026-10-30, status below; night: one isolated
   frame loss, see below).
+- yolov5s_relu_int8_mmse_v5.rknn — mmse on a MIXED calibration
+  set: 30 night + 20 day frames (Colab build 2026-11-01; md5
+  7c5656dd6aace3d186cc832c1501d8a8, verified on the board).
+  The full A/B record vs v4 lives in Status below.
 
 v4 recipe (build_v4.py; Colab notebook Untitled2.ipynb, a copy is
 saved as colab_v4_recipe.ipynb in artifacts): mean [0,0,0],
@@ -150,6 +155,20 @@ Status (2026-10-30, updated 2026-11-01): v3-vs-v4 A/B
     the cup recall boost is a free win. v3 stays the
     fidelity reference among int8 lines. M2.4-b (a) fully
     closed.
+- v4-vs-v5 A/B (2026-11-01 evening, tools/ab_run.py, conf 0.18,
+  static files): night (dataset_night, 200 ppm, gamma 2.0) —
+  v4 385 / v5 364 detections; median conf 0.443 / 0.474; the whole
+  delta sits in the 0.18-0.3 noise band (113 -> 95), upper bands
+  identical (0.5-0.8: 160/161, >=0.8: 17/17); cls 0 and cls 39
+  counts identical (67/67, 38/38); per-frame coverage 178/200
+  common, 1 frame only-v4, 1 only-v5. Day (dataset_day3, 100 ppm,
+  gamma 1.0) — v4 403 / v5 414; 376 detections IoU-matched (>=0.5)
+  with the same class on both sides — ZERO class flips; unmatched
+  27 (v4) / 38 (v5), all threshold-edge noise. VERDICT: v5 keeps
+  every confident detection on both scenes and sheds the night
+  noise tail. Working model switches to int8_mmse_v5 (owner call,
+  2026-11-01 evening) — this supersedes the mmse call above
+  (same day). M2.6 follow-up: none required; day re-check done.
 
 ## INT8 vs FP32 validation (2026-10-26, yolov5s_relu_int8_v2)
 
@@ -234,7 +253,8 @@ Dataset map (owner's clarification; current as of 2026-10-30):
   from day-2 and night-1 frames; THE calibration set of
   int8_v2 / int8_mmse (50 frames: n1_cal_* every 2nd of 50,
   n2_cal_* every 8th of 200); v3's calibration set is separate —
-  60 fresh day-4 daytime frames (see M2.4).
+  60 fresh day-4 daytime frames (see M2.4). v5's mixed set
+  (30 night + 20 day, 2026-11-01) is separate as well.
 - There is NO retrained FP32. The earlier session note "model
   retrained on dataset_mix" was wrong: dataset_mix is a
   calibration set (unlabeled dumps), Colab has no runs/, no

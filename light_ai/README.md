@@ -244,7 +244,8 @@ post-processing.
   working model by int8_mmse, 2026-10-30):
   recalibrated on 60 fresh day-4 daytime frames with mean=0/std=255 ->
   canonical input scale 1/255 (0.00392157) — see M2.4.
-  int8_mmse (WORKING MODEL since 2026-10-30): mmse-quantized on
+  int8_mmse (superseded as the working model by int8_mmse_v5,
+  2026-11-01 — see docs/state.md, INT8 build history): mmse-quantized on
   dataset_mix (the same 50-frame set as v2); input zp=-128,
   scale=0.00436174 (fitted, same as v2 — raw RGB byte writes remain
   correct). Daytime steady session (1280x960, conf 0.25): infer
@@ -456,7 +457,9 @@ the model stays yolov5s @ 640x640. Follow-up: v4 recalibration on a
 - tools/save_board_csv.py   — RKNNLite predictions dump (misc/board_preds.csv).
 - tools/ab_run.py — static-frame A/B between two .rknn models over a
   file pattern (RKNNLite): --model, --pattern, --out, --conf; writes
-  a per-frame predictions CSV. The v3-vs-v4 day/dusk A/Bs (INT8 build history - docs/state.md) ran through it.
+  a per-frame predictions CSV. The v3-vs-v4 day/dusk A/Bs (INT8 build history - docs/state.md) and the
+  v4-vs-v5 night/day A/Bs (2026-11-01: dataset_night 200 ppm, gamma 2.0;
+  dataset_day3 100 ppm, gamma 1.0; conf 0.18) ran through it.
 - tools/compare.py + tools/list_missed.py — INT8 vs FP32 comparison
   (IoU>0.5 + class match, mean |dscore|); see docs/state.md (INT8 vs FP32 validation).
 - tools/probe_dark_heads.py, probe_gamma_sweep.py, probe_adaptive.py,
@@ -478,7 +481,7 @@ fresh clone, place the .rknn files next to the executable — the
 
 ## Run
     sudo ./build/light_ai \
-        --device /dev/video20 --model ./misc/yolov5s_relu_int8_mmse.rknn --frames 3000 \
+        --device /dev/video20 --model ./misc/yolov5s_relu_int8_mmse_v5.rknn --frames 3000 \
         --net --net-h264 --core 7
 
 (LD_LIBRARY_PATH=/usr/local/lib was required earlier; since the
