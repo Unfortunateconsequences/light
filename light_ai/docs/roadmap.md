@@ -72,7 +72,12 @@ refer to README.md sections (../README.md).
       2026-11-01 (v4-vs-v5 night/day A/B, docs/state.md). Still
       open: a formal fp16-reference check for the current working
       model (v5) — the four-way day A/B of 2026-11-01 covered
-      v3/mmse/v4 only.
+      v3/mmse/v4 only. Progress 2026-11-01 evening: the NIGHT half
+      is done live (600 frames each, one static scene with the
+      restored vase) — v5 == fp16, no ALARM; the soft mmse
+      small-object signature confirmed (bowl ~-0.07, presence
+      100%); record in docs/state.md. Remaining: the DAY half
+      (next daylight session, same protocol).
 - [x] M2.4: int8 quantization — CLOSED 2026-10-26 on v3 (day-4
       daytime recalibration). v3 recipe: calibrated on 60 fresh day-4
       daytime frames, quant config mean=0/std=255 -> canonical input scale

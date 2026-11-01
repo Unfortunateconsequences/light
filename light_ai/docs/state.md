@@ -169,6 +169,47 @@ Status (2026-10-30, updated 2026-11-01): v3-vs-v4 A/B
   noise tail. Working model switches to int8_mmse_v5 (owner call,
   2026-11-01 evening) — this supersedes the mmse call above
   (same day). M2.6 follow-up: none required; day re-check done.
+- fp16-reference check, v5, NIGHT half (2026-11-01 evening, live
+  camera /dev/video20, 1280x960, one static scene, same session,
+  600 frames each, conf 0.25, --core 7, viewer attached,
+  box-log: misc/v5_live_night.csv, misc/fp16_live_night.csv):
+  the scene gained objects since the earlier sessions — a vase on
+  the table and bottles were restored before the runs. An earlier
+  same-evening pair WITHOUT the vase (and with an inconsistent
+  scene across the pair) is discarded — protocol violation, not
+  recorded. Results (sampled every 15th frame, confirmed by eye
+  against the logs):
+  | object         | v5 (int8)      | fp16           | delta   | presence   |
+  |----------------|----------------|----------------|---------|------------|
+  | chair          | 0.84-0.86      | 0.86-0.89      | ~-0.03  | 100%/100%  |
+  | potted plant   | 0.50-0.73      | 0.51-0.75      | parity  | 100%/100%  |
+  | bowl           | 0.58-0.67      | 0.70-0.76      | ~-0.07  | 100%/100%  |
+  | vase           | 0.26-0.39      | 0.28-0.41      | ~-0.01  | ~93%/100%  |
+  | dining table   | 0.26-0.35, intermittent | 0.27-0.37, intermittent | parity | flickers in both |
+  Boxes agree within ~3 px on every object; no empty frames in
+  either run. VERDICT: v5 == fp16 on the night profile. The
+  mmse-branch small-object signature reproduces SOFTLY (bowl
+  underscored ~-0.07 — the same direction as the day four-way,
+  but presence stays 100% with a wide margin above 0.25; no vase
+  underscoring at night). The 3/40 vase drops of v5 sit ON the
+  0.25 threshold (non-consecutive, conf dips to ~0.26 before the
+  drop) — edge flicker, far from the v2-ALARM level (-0.045
+  systematic + vase never caught). Timing: infer 23.9-24.6 (v5)
+  vs 29.4-30.5 (fp16) — the int8 gain ~20% live; sum/FPS
+  identical (~39.8 ms, ~25.2 FPS) — source-bound. Notes: (a)
+  bottles are NOT seen by either model (fp16 one-off: bottle 0.25
+  at (446,595) is a vase-box duplicate, class flap vase<->bottle
+  at the threshold; bottles likely out of the visible band or too
+  dark — visual check pending, owner); (b) a single enc=4.8 ms
+  block in the fp16 run (FPS dipped to 23.6 for one block, next
+  block back to 39.7/~25.2) — one-off, not a pattern; (c) the
+  fp16 startup log carries "net: tensor stride check:
+  size_with_stride=2457600 vs 1228800" absent on int8 runs (fp16
+  tensor attr vs the RGB888 buffer) — run is clean, note for a
+  possible guard revisit, low priority. DAY half of the check:
+  PENDING (next daylight session; plan: v5 + fp16 + optionally
+  v4, 600 frames each, same protocol) — see the roadmap M2.6
+  tail.
 
 ## INT8 vs FP32 validation (2026-10-26, yolov5s_relu_int8_v2)
 
