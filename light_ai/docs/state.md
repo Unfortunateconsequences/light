@@ -143,8 +143,13 @@ Status 2026-10-30 (v3-vs-v4 A/B):
     reference, loses cup), mmse/v4 = recall (cup boost,
     bowl/vase cost). Owner flag: small-object fidelity
     matters -> v3; recall on real small objects matters ->
-    mmse. Working-model decision unchanged (mmse) pending
-    the owner's call.
+    mmse.
+  * OWNER VERDICT (2026-11-01): mmse STAYS the working
+    model — night stability (49/50, no losses) outweighs
+    the day bowl/vase score dip (presence intact at 100%);
+    the cup recall boost is a free win. v3 stays the
+    fidelity reference among int8 lines. M2.4-b (a) fully
+    closed.
 
 ## INT8 vs FP32 validation (2026-10-26, yolov5s_relu_int8_v2)
 
