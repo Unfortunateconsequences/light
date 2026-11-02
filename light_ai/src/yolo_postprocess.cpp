@@ -203,6 +203,12 @@ void yolo_postprocess( const RknnEngine& npu, float cam_w, float cam_h, float mo
         d.h = std::min( cam_h - d.y, ( b.y2 - b.y1 ) * scale );
         d.cls = b.cls;
         d.conf = b.conf;
+        // Degenerate-box guard: a candidate whose x1 exceeded model_w
+        // clamps d.x to cam_w, leaving d.w <= 0 (same for h). Such a box
+        // would ride the smoother and the drawing paths with broken
+        // geometry. Skip it before any consumer sees it.
+        if ( d.w <= 0.0f || d.h <= 0.0f )
+            continue;
         out.push( d );
     }
 }
