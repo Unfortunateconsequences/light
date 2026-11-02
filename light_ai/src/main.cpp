@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <cmath>
+#include <csignal>
 
 #include "pipeline.hpp"
 
@@ -66,6 +67,8 @@ namespace
 
     // Model input dimensions are read from the model itself, so --mw/--mh are
     // intentionally gone: they could only desynchronize RGA from the real tensor.
+    // std::cerr is guaranteed-initialized before main; safe dependency, not a bug.
+    // NOLINTNEXTLINE(cppcoreguidelines-interfaces-global-init)
     const std::map<std::string, Option> kOptions = {
 
             // --- flags (no value) ---
@@ -201,8 +204,10 @@ namespace
                             "camera width",
                             []( Config& c, const char* v ) {
                                 int n = 0;
-                                if ( !parse_int( v, &n ) )
-                                    return value_error( "--w", v, nullptr );
+                                if ( !parse_int( v, &n ) || n < 16 || n > 8192 )
+                                    return value_error( "--w", v, "16..8192" );
+                                if ( n % 16 != 0 )
+                                    std::cerr << "warning: --w " << n << " is not a multiple of 16: some UVC cameras reject it\n";
                                 c.cam_w = n;
                                 return true;
                             } } },
@@ -211,8 +216,10 @@ namespace
                             "camera height",
                             []( Config& c, const char* v ) {
                                 int n = 0;
-                                if ( !parse_int( v, &n ) )
-                                    return value_error( "--h", v, nullptr );
+                                if ( !parse_int( v, &n ) || n < 16 || n > 8192 )
+                                    return value_error( "--h", v, "16..8192" );
+                                if ( n % 16 != 0 )
+                                    std::cerr << "warning: --h " << n << " is not a multiple of 16: some UVC cameras reject it\n";
                                 c.cam_h = n;
                                 return true;
                             } } },
@@ -296,6 +303,19 @@ namespace
         }
     }
 
+    // Graceful shutdown (P1-6): SIGINT/SIGTERM only set the stop flag;
+    // Pipeline::run() picks it up on the next frame and exits through the
+    // normal path (ring drain, TOTAL summary, encoder flush, camera
+    // STREAMOFF/teardown). The handler dereferences an atomic store only
+    // (de facto async-signal-safe); g_pipe is set right before run() and
+    // cleared right after, so it never dangles.
+    Pipeline* g_pipe = nullptr;
+    void on_stop_signal( int )
+    {
+        if ( g_pipe )
+            g_pipe->request_stop();
+    }
+
 }  // namespace
 
 int main( int argc, char** argv )
@@ -362,7 +382,12 @@ int main( int argc, char** argv )
     try
     {
         Pipeline p( cfg );
-        return p.run() > 0 ? 0 : 1;
+        std::signal( SIGINT, on_stop_signal );
+        std::signal( SIGTERM, on_stop_signal );
+        g_pipe = &p;
+        const int rc = p.run();
+        g_pipe = nullptr;
+        return rc > 0 ? 0 : 1;
     }
     catch ( const std::exception& e )
     {
