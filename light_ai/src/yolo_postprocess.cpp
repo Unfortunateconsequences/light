@@ -119,6 +119,13 @@ void yolo_postprocess( const RknnEngine& npu, float cam_w, float cam_h, float mo
         const int w = static_cast<int>( attr.dims[3] );
         const int stride = 8 << gi;
         const int per = static_cast<int>( attr.dims[1] ) / 3;  // 85 = 4+1+80
+        if ( per * 3 != static_cast<int>( attr.dims[1] ) )
+        {
+            std::cerr << "yolo: unexpected head layout (per="
+                      << per << ", ch=" << attr.dims[1]
+                      << ")\n";
+            continue;  // not a 3-anchor yolov5 head - skip
+        }
 
         for ( int gy = 0; gy < h; ++gy )
         {
@@ -132,8 +139,8 @@ void yolo_postprocess( const RknnEngine& npu, float cam_w, float cam_h, float mo
                 {
                     const size_t off = base + static_cast<size_t>( k ) * per * cell_hw;
                     const float obj = fp16_to_float( data[off + 4 * cell_hw] );
-                    if ( obj < 0.05f )
-                        continue;  // cheap early cut, below any usable conf_thr
+                    if ( !( obj >= 0.05f ) )
+                        continue;  // cheap early cut, below any usable conf_thr (NaN-safe)
 
                     int best = 0;
                     float best_cls = 0.0f;
@@ -147,7 +154,7 @@ void yolo_postprocess( const RknnEngine& npu, float cam_w, float cam_h, float mo
                         }
                     }
                     const float conf = obj * best_cls;
-                    if ( conf < conf_thr )
+                    if ( !( conf >= conf_thr ) )  // NaN-safe: NaN passes a plain <
                         continue;
 
                     const float* an = kANCH[gi][k];
@@ -157,6 +164,11 @@ void yolo_postprocess( const RknnEngine& npu, float cam_w, float cam_h, float mo
                     const float bh = fp16_to_float( data[off + 3 * cell_hw] );
                     const float w = ( bw * 2.0f ) * ( bw * 2.0f ) * an[0];
                     const float h = ( bh * 2.0f ) * ( bh * 2.0f ) * an[1];
+
+                    // NaN guard: NaN in any coordinate would sail through
+                    // every plain < / || filter below and land in the box list.
+                    if ( cx != cx || cy != cy || w != w || h != h )
+                        continue;
 
                     if ( cy < lb_top || cy >= lb_top + lb_h )
                         continue;  // bar

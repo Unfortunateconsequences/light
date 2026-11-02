@@ -595,7 +595,8 @@ int Pipeline::run()
                     // of the tensor (boxes already drawn and synced) and
                     // converts it to NV12 1:1 — no upscale.
                     const auto t5 = clk::now();
-                    enc_->publish( npus_[0].input_fd(), fence );
+                    enc_->publish( npus_[0].input_fd(), fence,
+                            std::chrono::duration_cast<std::chrono::microseconds>( t0 - t_start ).count() );
                     const auto t6 = clk::now();
                     // publish() is synchronous in the pipeline thread:
                     // fence-poll + RGA crop + encode + mux + TCP write.
@@ -806,7 +807,11 @@ void Pipeline::cal_dump_maybe( RknnEngine& e, int frame_idx )
     if ( !cfg_.dump_cal )
     {
         std::ostringstream name;
-        name << "dataset/cal_" << std::setw( 4 ) << std::setfill( '0' ) << cal_saved_ << ".ppm";
+        // The series name follows the FRAME counter, as documented
+        // (README / tools/oracle_check.py protocol): with --cal-interval K
+        // the files are frames 0, K, 2K, .... cal_saved_ stays as the
+        // --cal N cap.
+        name << "dataset/cal_" << std::setw( 4 ) << std::setfill( '0' ) << frame_idx << ".ppm";
         path = name.str();
     }
     std::ofstream out( path, std::ios::binary );

@@ -176,6 +176,7 @@ bool GpuBoxDrawer::init()
     if ( !st_.get_platform_display )
     {
         std::cerr << "drawer: eglGetPlatformDisplayEXT missing\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     // GBM display: the mali libgbm first, then the system one
@@ -186,6 +187,7 @@ bool GpuBoxDrawer::init()
     if ( !st_.dl_gbm )
     {
         std::cerr << "drawer: libgbm not loadable\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     typedef void *( *P_gbm_create_device )( int );
@@ -193,6 +195,7 @@ bool GpuBoxDrawer::init()
     if ( !gbm_create_device )
     {
         std::cerr << "drawer: gbm_create_device missing\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     for ( const char *node : { "/dev/dri/renderD128", "/dev/dri/card0" } )
@@ -236,6 +239,7 @@ bool GpuBoxDrawer::init()
     if ( st_.dpy == EGL_NO_DISPLAY )
     {
         std::cerr << "drawer: EGL/GBM init failed (0x" << std::hex << eglGetError() << std::dec << ")\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
 
@@ -243,6 +247,7 @@ bool GpuBoxDrawer::init()
     if ( !has( exts, "EGL_EXT_image_dma_buf_import" ) || !has( exts, "EGL_KHR_image_base" ) )
     {
         std::cerr << "drawer: no image import extensions\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
 
@@ -263,6 +268,7 @@ bool GpuBoxDrawer::init()
     if ( !st_.create_image || !st_.image_target_tex )
     {
         std::cerr << "drawer: image entry points missing\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     st_.native_fence = has( exts, "EGL_ANDROID_native_fence_sync" ) && st_.create_sync && st_.client_wait;
@@ -293,11 +299,13 @@ bool GpuBoxDrawer::init()
     if ( !st_.ctx || !eglMakeCurrent( st_.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, st_.ctx ) )
     {
         std::cerr << "drawer: context failed (0x" << std::hex << eglGetError() << std::dec << ")\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     if ( !make_program() )
     {
         std::cerr << "drawer: program failed\n";
+        done();  // init() error path: release everything created so far
         return false;
     }
     glGenBuffers( 1, &st_.vbo );
@@ -360,6 +368,15 @@ bool GpuBoxDrawer::attach_slot( int slot, int tensor_dma_fd, int w, int h, uint3
     if ( fst != GL_FRAMEBUFFER_COMPLETE )
     {
         std::cerr << "drawer: FBO incomplete (slot " << slot << ", status 0x" << std::hex << fst << std::dec << ")\n";
+        // A partial attach must not leave si.img set: the idempotent
+        // early return would then report success with a broken FBO.
+        // Tear everything down so a retry starts clean.
+        glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+        glDeleteFramebuffers( 1, &si.fbo );
+        glDeleteTextures( 1, &si.tex );
+        if ( st_.destroy_image )
+            st_.destroy_image( st_.dpy, si.img );
+        si = {};
         return false;
     }
     st_.w = w;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <fstream>
+#include <iostream>
 #include <string>
 
 #include "yolo_postprocess.hpp"
@@ -18,8 +19,12 @@ class BoxSmoother
 public:
     void set_log( const std::string& path )
     {
-        if ( !path.empty() )
-            log_.open( path );  // overwrite: each A/B run starts clean
+        if ( path.empty() )
+            return;
+        log_.open( path );  // overwrite: each A/B run starts clean
+        if ( !log_.is_open() )
+            std::cerr << "smoother: box-log open failed for '"
+                      << path << "' - A/B logging disabled\n";
     }
 
     void update( const DetList& in, DetList& out )

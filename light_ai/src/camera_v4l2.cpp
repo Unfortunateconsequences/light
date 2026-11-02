@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cctype>
@@ -51,6 +52,13 @@ CameraV4L2::CameraV4L2( int w, int h ) : width_( w ), height_( h )
 // here.
 int CameraV4L2::setup_device( const std::string& dev, std::string* why )
 {
+    // Idempotent entry: the startup fallback calls setup_device() twice
+    // (direct setup first, then discovery re-runs it). Without this call
+    // a failed direct setup leaks its fd and leaves dead buffer pointers
+    // behind, which the following setup would silently overwrite;
+    // teardown() is a no-op when nothing is open.
+    teardown();
+
     fd_ = ::open( dev.c_str(), O_RDWR | O_CLOEXEC );
     if ( fd_ < 0 )
     {
@@ -315,13 +323,56 @@ int CameraV4L2::dequeue( uint32_t* size, int* err )  // NOLINT(readability-make-
     v4l2_buffer buf {};
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
-    while ( ioctl( fd_, VIDIOC_DQBUF, &buf ) < 0 )
+    int err_streak = 0;
+    while ( true )
     {
-        if ( errno == EINTR || errno == EAGAIN )
-            continue;
-        if ( err )
-            *err = errno;
-        return -1;
+        // Watchdog: the wait is bounded by poll(). A camera that silently
+        // stops delivering frames (wedged UVC endpoint, firmware stall)
+        // never produces an errno, so an unguarded blocking DQBUF hung
+        // the pipeline thread forever and recovery never ran. The
+        // timeout is reported as EIO, the recoverable class, so a
+        // stall goes through the same reconnect path as a disappearing
+        // device. 2 s is far beyond any legitimate inter-frame gap
+        // (worst measured: ~53 ms).
+        pollfd pfd {};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+        const int pr = ::poll( &pfd, 1, static_cast<int>( kDequeuePollMs ) );
+        if ( pr < 0 )
+        {
+            if ( errno == EINTR )
+                continue;
+            if ( err )
+                *err = errno;
+            return -1;
+        }
+        if ( pr == 0 )
+        {
+            std::cerr << "cam: no frame in " << kDequeuePollMs << " ms - treating as recoverable stall\n";
+            if ( err )
+                *err = EIO;
+            return -1;
+        }
+        if ( ioctl( fd_, VIDIOC_DQBUF, &buf ) < 0 )
+        {
+            if ( errno == EINTR || errno == EAGAIN )
+                continue;
+            if ( err )
+                *err = errno;
+            return -1;
+        }
+        if ( buf.flags & V4L2_BUF_FLAG_ERROR )
+        {
+            requeue( static_cast<int>( buf.index ) );
+            ++err_streak;
+            if ( err_streak < static_cast<int>( kBufCount ) )
+                continue;
+            std::cerr << "cam: " << err_streak << " consecutive corrupt buffers - stall\n";
+            if ( err )
+                *err = EIO;
+            return -1;
+        }
+        break;
     }
     if ( err )
         *err = 0;

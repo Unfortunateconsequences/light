@@ -51,7 +51,8 @@ private:
 private:
     enum : unsigned
     {
-        kBufCount = 4
+        kBufCount = 4,
+        kDequeuePollMs = 2000  // dequeue watchdog: no frame within this window = recoverable stall (EIO)
     };
     int fd_ = -1;
     int width_ = 0, height_ = 0;

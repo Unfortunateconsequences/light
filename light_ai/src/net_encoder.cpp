@@ -1,3 +1,4 @@
+#include <vector>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -257,6 +258,12 @@ void NetEncoder::serve()
             std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
             continue;
         }
+        // Live stream: the muxer must not hold packets for batching.
+        // Defaults (max_delay 0.7 s, preload 0.5 s, buffered file I/O)
+        // make the TS writer emit data in bursts - on Wi-Fi that reads as
+        // periodic client-side buffering. Flush every packet instead.
+        fc->max_delay = 0;
+        fc->flush_packets = 1;
 
         AVIOContext* pb = nullptr;
         uint8_t* iobuf = nullptr;
@@ -375,7 +382,7 @@ void NetEncoder::serve()
         // Live-stream patch: повторять PAT/PMT/SDT в эфире, чтобы приёмник
         // мог подключиться в любой момент, а не только на старте потока.
         AVDictionary* mux_opts = nullptr;
-        av_dict_set( &mux_opts, "mpegts_flags", "+pat_pmt_at_frames", 0 );
+        av_dict_set( &mux_opts, "mpegts_flags", "+pat_pmt_at_frames+resend_headers", 0 );
         av_dict_set( &mux_opts, "pat_period", "0.1", 0 );
         av_dict_set( &mux_opts, "sdt_period", "0.25", 0 );
         int ret2 = avformat_write_header( fc, &mux_opts );
@@ -471,7 +478,7 @@ void NetEncoder::publish( int tensor_fd, int acquire_fence_fd, int64_t ts_us )
     if ( !send_frame( fc_, st_ ) )
     {
         error_.store( true );
-        cv_.notify_all();  // serve() closes and reopens the UDP path
+        cv_.notify_all();  // serve() closes and reopens the stream path
     }
 }
 
@@ -591,8 +598,86 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
         }
         pkt->stream_index = st->index;
         pkt->pts = pkt->dts = fpts * frame_step_;
-        const int r = av_interleaved_write_frame( fc, pkt );
+        // Late-join support: SPS/PPS travel only in the very first packet,
+        // so a client connecting mid-GOP cannot decode until the next IDR
+        // (mpv: 'non-existing PPS 0' spam, broken first second). Capture
+        // the parameter-set prefix from the first key packet and prepend
+        // it to every following IDR; the TS muxer tolerates the duplicate.
+        // The parameter-set prefix lives in the hdr_ member (project
+        // rule: no function-local statics outside tools/).
+        auto is_idr = []( const AVPacket* q ) -> bool
+        {
+            for ( size_t i = 0; i + 4 <= (size_t)q->size; ++i )
+                if ( q->data[i] == 0 && q->data[i+1] == 0 && q->data[i+2] == 1 )
+                {
+                    const uint8_t t = q->data[i+3] & 0x1F;
+                    if ( t == 5 ) return true;
+                    if ( t == 6 || t == 7 || t == 8 || t == 9 ) continue;
+                    return false;
+                }
+            return false;
+        };
+        auto hdr_capture = []( const AVPacket* q, std::vector< uint8_t >& out ) -> bool
+        {
+            // Anchor at the first start code: both 3-byte (00 00 01) and
+            // 4-byte (00 00 00 01) prefixes occur in the wild; anchoring
+            // on 3-byte only silently matched nothing on 4-byte input.
+            size_t i = 0;
+            while ( i + 3 <= (size_t)q->size &&
+                    !( q->data[i] == 0 && q->data[i+1] == 0 && q->data[i+2] == 1 ) )
+                ++i;
+            if ( i + 4 > (size_t)q->size )
+                return false;
+            bool saw_sps = false;
+            while ( i + 4 <= (size_t)q->size && q->data[i] == 0 && q->data[i+1] == 0 && q->data[i+2] == 1 )
+            {
+                const uint8_t t = q->data[i+3] & 0x1F;
+                if ( t == 7 ) saw_sps = true;
+                if ( t == 5 || t == 1 || t == 10 ) break;  // slice/EoS NAL: header ends here
+                size_t j = i + 3;
+                while ( j + 3 <= (size_t)q->size && !( q->data[j] == 0 && q->data[j+1] == 0 && q->data[j+2] == 1 ) ) ++j;
+                i = j;
+            }
+            if ( saw_sps && i > 0 )
+            {
+                out.assign( q->data, q->data + i );
+                return true;
+            }
+            return false;
+        };
+        auto starts_with = []( const AVPacket* q, const std::vector< uint8_t >& h ) -> bool
+        {
+            return h.size() && q->size >= (int)h.size() && memcmp( q->data, h.data(), h.size() ) == 0;
+        };
+        AVPacket* dup = nullptr;
+        if ( is_idr( pkt ) )
+        {
+            if ( hdr_.empty() && hdr_capture( pkt, hdr_ ) )
+                std::cout << "enc: h264 header captured: " << hdr_.size() << " bytes, repeating on every IDR\n";
+            else if ( !hdr_.empty() && !starts_with( pkt, hdr_ ) )
+            {
+                dup = av_packet_alloc();
+                if ( dup && av_new_packet( dup, hdr_.size() + (size_t)pkt->size ) >= 0 )
+                {
+                    memcpy( dup->data, hdr_.data(), hdr_.size() );
+                    memcpy( dup->data + hdr_.size(), pkt->data, pkt->size );
+                    av_packet_copy_props( dup, pkt );
+                    if ( !hdr_logged_ )
+                    {
+                        std::cout << "enc: header repeat active\n";
+                        hdr_logged_ = true;
+                    }
+                }
+                else
+                {
+                    av_packet_free( &dup );
+                    dup = nullptr;
+                }
+            }
+        }
+        const int r = av_interleaved_write_frame( fc, dup ? dup : pkt );
         av_packet_unref( pkt );
+        av_packet_free( &dup );
         if ( r < 0 )
         {
             char err[64];

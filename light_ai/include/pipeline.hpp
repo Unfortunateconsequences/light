@@ -22,7 +22,6 @@ struct Config
 {
     std::string device = "/dev/video20";
     std::string model = "./misc/yolov5s_relu_int8_mmse_v5.rknn";
-    //int cam_w = 1920, cam_h = 1080;
     int cam_w = 1280, cam_h = 960;
     // Two-pass RGA kicks in only when the source exceeds 8x the model input
     // per axis (checked in the Pipeline ctor); at 720p -> 640 it stays dormant.
@@ -61,7 +60,7 @@ struct Config
 
     // M3.10: per-frame box CSV for the jitter A/B (raw vs smoothed).
     std::string box_log;
-    std::string net_host;  // UDP destination, --net-host (required with --net-h264)
+    std::string net_host;  // UDP push destination (--net-host); empty = TCP pull on net_port
     // M3.7: force the CPU box-drawing path (A/B vs the GPU drawer).
     bool cpu_draw = false;
 };

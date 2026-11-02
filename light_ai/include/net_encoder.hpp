@@ -19,12 +19,15 @@
 // "rk_mpi.h" hits the distro /usr/include/rockchip instead, and the two
 // header sets redefine the same MppFrame enums (build failure).
 #include <rockchip/rk_mpi.h>
+#include <vector>
 
-// M3.5 phase B2: hardware-encoded preview (h264_rkmpp) in MPEG-TS over
-// UDP. The stream is pushed to a fixed viewer address (net_host) as soon
-// as the pipeline starts: UDP has no "connect", the viewer joins whenever
-// it wants (VLC: udp://@:1234). A lost packet glitches briefly until the
-// next IDR instead of stalling the whole flow like TCP over Wi-Fi.
+// M3.5 phase B2: hardware-encoded preview (h264_rkmpp) in MPEG-TS.
+// Default transport is TCP pull: the board listens on net_port, the
+// viewer connects when it wants (ffplay tcp://<board-ip>:1234). The
+// legacy UDP push to net_host (--net-host) remains available: UDP has
+// no "connect", the viewer joins whenever it wants, and a lost packet
+// glitches briefly until the next IDR instead of stalling the whole
+// flow like TCP over Wi-Fi.
 class NetEncoder
 {
 public:
@@ -50,7 +53,7 @@ private:
 
     std::mutex mx_;
     std::condition_variable cv_;
-    void* fc_ = nullptr;     // AVFormatContext* (mpegts over UDP)
+    void* fc_ = nullptr;     // AVFormatContext* (mpegts: TCP pull or UDP push)
     void* st_ = nullptr;     // AVStream*
     void* enc_ = nullptr;    // AVCodecContext* (h264_rkmpp)
     void* frame_ = nullptr;  // AVFrame* (NV12 over an MPP DRM buffer)
@@ -75,4 +78,11 @@ private:
     int model_w_ = 0, model_h_ = 0;  // NPU tensor geometry (RGB888)
     int band_top_ = 0, band_h_ = 0;  // visible letterbox band in the tensor
     int vstride_ = 0;  // NV12 ver stride (16-aligned h), set in the ctor
+
+    // h264 parameter-set prefix captured from the first key
+    // packet, prepended to every following IDR (late-joiner
+    // support). Plain members: function-local statics are
+    // forbidden outside tools/.
+    std::vector< uint8_t > hdr_;
+    bool hdr_logged_ = false;
 };

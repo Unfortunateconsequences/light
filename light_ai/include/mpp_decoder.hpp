@@ -24,6 +24,15 @@ public:
     int aux_fd( size_t bytes );  // returns fd or -1; buffer lives until dtor
 
 private:
+    // Bounded MPP polls: a wedged decoder must not hang the pipeline
+    // thread forever: camera recovery cannot help a thread that is
+    // stuck inside decode() rather than in DQBUF. Steady decode is
+    // ~2-3 ms; 1 s is a huge margin even for the worst case.
+    enum : int
+    {
+        kTaskPollMs = 1000
+    };
+
     MppCtx ctx_ = nullptr;
     MppApi* mpi_ = nullptr;
     MppBufferGroup out_group_ = nullptr;

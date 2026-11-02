@@ -537,10 +537,12 @@ source-bound, M2.5),
 --cal N, --cal-interval K (--cal saves up to N model-input frames into
 dataset/, one every K frames — the int8 calibration dataset collector;
 one frame is ~1.2 MB, so 200 frames are ~240 MB on /tmp's storage).
---dump-cal <dir> (writes model-input PPM dumps cal_%04d.ppm — the oracle
-input for tools/oracle_check.py; numbering follows the frame counter:
-with --cal-interval K the dumps are frames 0, K, 2K, ...). The dump file
-is created by whoever runs the binary — root/normal-user ownership
+--dump-cal (no argument) writes ONE model-input frame (P6 PPM) to
+/tmp/cal.ppm, once per run — the first eligible frame. The oracle input
+for tools/oracle_check.py is the SERIES: --cal N --cal-interval K writes
+cal_%04d.ppm into dataset/, numbering follows the frame counter: with
+--cal-interval K the dumps are frames 0, K, 2K, .... The dump files are
+created by whoever runs the binary — root/normal-user ownership
 conflicts abort with "calibration dump failed" (see Platform constraints).
 --box-log <path> (per-frame CSV of raw vs smoothed boxes — the
 M3.10 jitter A/B tool; near-zero cost when unset).

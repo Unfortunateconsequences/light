@@ -166,10 +166,11 @@ int MppDecoder::decode( const uint8_t* data, size_t size )
     mpp_buffer_put( pbuf );                      // release ours
     mpp_packet_set_pts( pkt_, ++pts_ );
 
-    // Input: wait for a free task
-    if ( mpi_->poll( ctx_, MPP_PORT_INPUT, MPP_POLL_BLOCK ) != MPP_OK )
+    // Input: wait for a free task (bounded: the input queue is a few
+    // tasks deep, a free task must appear within a frame interval)
+    if ( mpi_->poll( ctx_, MPP_PORT_INPUT, static_cast<MppPollType>( kTaskPollMs ) ) != MPP_OK )
     {
-        std::cerr << "dec: no free input task\n";
+        std::cerr << "dec: no free input task in " << kTaskPollMs << " ms\n";
         return -3;
     }
     MppTask task = nullptr;
@@ -186,16 +187,22 @@ int MppDecoder::decode( const uint8_t* data, size_t size )
     if ( ret != MPP_OK )
     {
         std::cerr << "dec: input enqueue ret=" << ret << '\n';
-        // Best effort: hand the task back so the decoder thread is not stuck
-        // waiting for it forever on the next poll.
-        mpi_->enqueue( ctx_, MPP_PORT_INPUT, task );
+        // Hand the task back so the decoder thread is not stuck waiting
+        // for it forever on the next poll. A failed re-enqueue means the
+        // queue state is broken: log it loudly, no third attempt.
+        if ( mpi_->enqueue( ctx_, MPP_PORT_INPUT, task ) != MPP_OK )
+        {
+            std::cerr << "dec: task re-enqueue failed, decoder queue state broken\n";
+        }
         return -5;
     }
 
-    // Output: wait for the decoded frame
-    if ( mpi_->poll( ctx_, MPP_PORT_OUTPUT, MPP_POLL_BLOCK ) != MPP_OK )
+    // Output: wait for the decoded frame (bounded: steady decode is
+    // ~2-3 ms; a timeout means MPP is wedged — surface it instead of
+    // hanging the pipeline thread forever)
+    if ( mpi_->poll( ctx_, MPP_PORT_OUTPUT, static_cast<MppPollType>( kTaskPollMs ) ) != MPP_OK )
     {
-        std::cerr << "dec: output not ready\n";
+        std::cerr << "dec: output not ready in " << kTaskPollMs << " ms\n";
         return -6;
     }
     task = nullptr;
