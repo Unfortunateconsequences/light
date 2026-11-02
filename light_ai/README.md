@@ -81,14 +81,36 @@ post-processing.
                cam_node_ and adopts a re-enumerated one transparently.
                A permanent unplug exhausts the 20x1 s window and ends
                the run with exit code 1.
+               Robustness (2026-11-02, P1-5/P1-7): every setup_device
+               error path after open() calls teardown() itself — a
+               failed setup leaks neither fd nor mappings; the usb
+               node check requires V4L2_CAP_STREAMING (a read()-only
+               node is rejected with a clear diagnosis instead of a
+               confusing QUERYBUF failure); REQBUFS returning fewer
+               than 3 buffers warns loudly (ping-pong depth lost).
+               teardown() skips empty slots instead of breaking on
+               the first one. The consecutive-corrupt-buffer streak
+               (BUF_FLAG_ERROR) is a class member: it survives
+               dequeue() calls and is reset only by a clean frame or
+               by reconnect() after a successful STREAMON.
 - MppDecoder : MJPEG -> YUV422SP decode into an external dma-buf pool,
                returns the frame fd. Sized from Config, not hard-coded.
+               Recovery (2026-11-02, P0-1): the packet is drained
+               per call on every path (error and success) — MPP no
+               longer holds a reference across the decode gap; on
+               -6/-7 (output poll/dequeue failure) mpi->reset()
+               runs first, un-wedging the input path (was: permanent
+               -3 after a single -6).
                Also hands out an aux dma-buf from the same pool for the
                multi-pass RGA path.
 - RgaResizer : im2d resize by fd (wrapbuffer_fd + improcess). Two-pass path
                when the per-axis scale ratio exceeds the RGA3 limit (1/8),
                guarded against aux_fd < 0. All jobs are pinned to RGA3 core0
                via imconfig at startup.
+               Letterbox geometry is a per-call LbGeom value carried
+               through dispatch into the pipeline slot (2026-11-02,
+               P1-1) — the shared mutable members are gone; under
+               --pool 3 they were a cross-thread race.
 - RknnEngine : init/query failures throw (fail loudly like CameraV4L2) —
                main() reports the real cause, no zombie objects. Options:
                rknn_create_mem + rknn_set_io_mem; the input tensor fd is
@@ -99,10 +121,22 @@ post-processing.
                rewritten to FLOAT16 (buffer becomes n_elems * 2) so the
                runtime performs per-channel dequantization into our
                zero-copy buffer — postprocess stays untouched.
+               Non-copyable by design (2026-11-02, P0-3): copying
+               would corrupt rknn contexts on reallocation; the move
+               ctor transfers ctx/tensor mems and leaves a hollow
+               shell (ctx_=0), keeping vector::reserve legal.
 - Pipeline   : model input geometry is read from the model file itself
                (input_attr), not from CLI flags. Aux allocation happens after
                model geometry is known (constructor-order bug fixed; a
                one-line "aux not needed" log confirms the single-pass path).
+               Concurrency & shutdown (2026-11-02): publish_oldest()
+               waits at most 5 s with quit_ in the predicate — on
+               timeout the slot is marked drop and freed by its
+               worker after the in-flight rknn_run completes (never
+               while the NPU reads the tensor). SIGINT/SIGTERM set a
+               stop flag: run() exits through the normal path (ring
+               drain, TOTAL summary, encoder flush, camera
+               teardown) instead of being killed outright.
 
 - GpuBoxDrawer (M3.7): box drawing on Mali G610 (EGL/GBM) straight
                into the NPU input tensor. The tensor dma-buf is imported
@@ -110,6 +144,10 @@ post-processing.
                sync; falls back to CPU drawing (draw_boxes_cpu in
                pipeline.cpp) if the tensor pitch is not usable or init
                fails. --cpu-draw forces the CPU path (A/B baseline).
+               attach_slot() fixes the shared geometry on the first
+               attach; any later attach with different w/h/stride
+               fails loudly with partial attach cleanup (2026-11-02,
+               P0-5).
 - NetPreview : opt-in preview stream (--net): TCP server on port 1234,
                sends the model-input frame (640x640 letterboxed rgb24)
                as rawvideo inside a NUT container, paced by --net-fps
@@ -139,6 +177,10 @@ post-processing.
                first viewer connects; a stalled viewer is dropped via
                SO_SNDTIMEO (2 s). Late joiners via repeated
                PAT/PMT/SDT.
+               The NV12 dma-buf pool is three buffers deep (2026-11-02,
+               P1-4): two could run out exactly at the 3-deep rkmpp
+               task queue when VFR frames arrive in clumps after a
+               network pause; the slot index advance is modulus-based.
                2026-11-01: board-side stream fixes verified live —
                TCP_NODELAY + 256 KiB SO_SNDBUF on the accepted socket,
                max_delay=0, flush_packets=1,
@@ -502,6 +544,14 @@ the model stays yolov5s @ 640x640. Follow-up: v4 recalibration on a
 ## Build
     ./scripts/build.sh
 
+Target CPU flags (CMakeLists.txt TARGET_CPU_FLAGS, 2026-11-02):
+-mcpu=cortex-a76 -mtune=cortex-a76.cortex-a55. The dot form is legal
+only in -mtune (GCC 10.2 rejects -mcpu=cortex-a76+cortex-a55: "+"
+there means a feature modifier). Measured effect on the camera-bound
+pipeline: none (sum 95.5 ms, ~20.0 FPS before and after — the
+boundary is the camera pacing, inference lives on the NPU); kept as
+a documentation of intent.
+
 Models are NOT tracked by git (*.rknn is ignored): they are build
 artifacts of the Colab quantization pipeline (see Platform constraints
 and M2.4) and live on each machine, transferred out of band. After a
@@ -580,6 +630,13 @@ section, revised 2026-11-01; the 2026-10-31 dxva2-copy combo stays as
 the CPU-unload fallback). --cpu-draw forces CPU
 box drawing even when the GPU drawer is up (A/B baseline; default
 is GPU drawing).
+
+Graceful shutdown (2026-11-02): SIGINT/SIGTERM do not kill the
+process; the frame loop exits through the normal path — the log ends
+with "stop: signal received, draining and flushing...", the TOTAL
+timing line, "Processed N frames ..." and a clean teardown (encoder
+flush, camera STREAMOFF). The same applies to kill <pid> (SIGTERM) —
+use it in automated tests instead of SIGKILL.
 
 ## Viewer (mpv, legacy Windows laptop; recorded 2026-10-31, revised 2026-11-01)
 
