@@ -199,10 +199,18 @@ Pipeline::Pipeline( const Config& cfg )
     }
     else
     {
-        const int kCores[3] = { 1, 2, 4 };
+        constexpr int cores[] = { 1, 2, 4 };
+        if ( npool_ > static_cast<int>( std::size( cores )) )
+        {
+            throw std::runtime_error( "npu pool size > 3 is not supported" );
+        }
+
         for ( int k = 0; k < npool_; ++k )
         {
-            if ( npus_[k].set_core_mask( static_cast<unsigned>( kCores[k] ) ) != 0 )
+            // clang 11 analyzer cannot fold std::size() into a constant and misses the
+            // guard above; reading kCores[k] is safe because k < npool_ <= std::size(kCores).
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            if ( npus_[k].set_core_mask( static_cast<unsigned>( cores[k] ) ) != 0 )
             {
                 throw std::runtime_error( "rknn set_core_mask failed" );
             }
@@ -353,7 +361,7 @@ int Pipeline::run()
     int warmup_left = 0;  // publish-discards after reconnect
 
     smoother_.set_log( cfg_.box_log );
-    for ( int i = 0; i < cfg_.frames; ++i )
+    for ( int i = 0; i < cfg_.frames && !stop_.load(); ++i )
     {
         const auto t0 = clk::now();
 
@@ -471,17 +479,19 @@ int Pipeline::run()
             // frame a FREE slot is guaranteed to exist.
             Slot& sl = slots_[slot];
             const auto t3 = clk::now();
+            LbGeom lg {};
             const bool rga_ok =
-                    rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, sl.eng->input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2 );
+                    rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, sl.eng->input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2, &lg );
             cal_dump_maybe( *sl.eng, i );
             const auto t3b = clk::now();
             const int64_t ts_us = std::chrono::duration_cast<std::chrono::microseconds>( t0 - t_start ).count();
-            dispatch( slot, i, ts_us, rga_ok, cam_ms, dec_ms, ms( t3, t3b ) );
+            dispatch( slot, i, ts_us, rga_ok, lg.top, lg.h, cam_ms, dec_ms, ms( t3, t3b ) );
             continue;
         }
 
+        LbGeom lg {};
         const bool rga_ok =
-                rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, npus_[0].input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2 );
+                rga_.resize( fd_src, cfg_.cam_w, cfg_.cam_h, npus_[0].input_fd(), model_w_, model_h_, aux_fd_, cfg_.cam_w / 2, cfg_.cam_h / 2, &lg );
 
         const auto t3 = clk::now();
 
@@ -502,8 +512,8 @@ int Pipeline::run()
                     cfg_.cam_h,
                     model_w_,
                     model_h_,
-                    static_cast<float>( rga_.lb_top() ),
-                    static_cast<float>( rga_.lb_h() ),
+                    static_cast<float>( lg.top ),
+                    static_cast<float>( lg.h ),
                     dets_raw_,
                     cfg_.conf_thr,
                     cfg_.iou_thr );
@@ -532,7 +542,7 @@ int Pipeline::run()
                 // colors (det_color); the GPU draws them in one call,
                 // the CPU fallback rasterizes the same list.
                 const float s = static_cast<float>( model_w_ ) / cfg_.cam_w;
-                const float lb_top = static_cast<float>( rga_.lb_top() );
+                const float lb_top = static_cast<float>( lg.top );
                 boxes_.clear();
                 for ( int k = 0; k < dets_.n; ++k )
                 {
@@ -609,6 +619,9 @@ int Pipeline::run()
         g_t.add( ms( t0, t1 ), ms( t1, t2 ), ms( t2, t3 ), ms( t3b, t4 ), enc_ms );
     }
 
+    if ( stop_.load() )
+        std::cout << "stop: signal received, draining and flushing...\n";
+
     // M4: drain the ring — publish whatever the workers already finished.
     while ( npool_ > 1 && pub_n_ > 0 )
         ok += publish_oldest();
@@ -679,12 +692,20 @@ void Pipeline::worker_loop( int slot )
         {
             std::lock_guard<std::mutex> lk( sl.mx );
             sl.st = Slot::DONE;
+            // Publish may have given up waiting (bounded wait): free
+            // the slot here -- it is already out of the publish FIFO.
+            if ( sl.drop )
+            {
+                sl.st = Slot::FREE;
+                sl.frame = -1;
+                sl.drop = false;
+            }
         }
         sl.cv.notify_all();
     }
 }
 
-void Pipeline::dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok, double cam_ms, double dec_ms, double rga_ms )
+void Pipeline::dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok, int lb_top, int lb_h, double cam_ms, double dec_ms, double rga_ms )
 {
     Slot& sl = slots_[slot];
     {
@@ -693,11 +714,12 @@ void Pipeline::dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok, do
         sl.ts_us = ts_us;
         sl.rga_ok = rga_ok;
         sl.npu_ok = false;
+        sl.drop = false;
         sl.cam_ms = cam_ms;
         sl.dec_ms = dec_ms;
         sl.rga_ms = rga_ms;
-        sl.lb_top = static_cast<float>( rga_.lb_top() );
-        sl.lb_h = static_cast<float>( rga_.lb_h() );
+        sl.lb_top = lb_top;
+        sl.lb_h = lb_h;
         sl.st = Slot::QUEUED;
     }
     pub_slots_[( pub_head_ + pub_n_ ) % 3] = slot;
@@ -710,9 +732,27 @@ int Pipeline::publish_oldest()
     const int ps = pub_slots_[pub_head_];
     Slot& sl = slots_[ps];
     std::unique_lock<std::mutex> lk( sl.mx );
-    sl.cv.wait( lk, [&sl] {
-        return sl.st == Slot::DONE;
+    // Bounded wait (P0-2): rknn_run normally always completes; a
+    // timeout means a wedged NPU/runtime -- drop the frame instead of
+    // hanging the whole pipeline (and Ctrl-C) forever. quit_ releases
+    // the wait on shutdown as well. The slot is NOT freed here: the
+    // worker may still be mid-infer on this tensor, handing it back
+    // to RGA would overwrite memory the NPU is reading. The worker
+    // sees Slot::drop at its DONE transition and frees the slot.
+    const bool done = sl.cv.wait_for( lk, std::chrono::seconds( 5 ), [this, &sl] {
+        return sl.st == Slot::DONE || quit_.load();
     } );
+    if ( !done || sl.st != Slot::DONE )
+    {
+        if ( sl.st == Slot::QUEUED )
+            sl.drop = true;
+        std::cerr << "pipeline: publish wait gave up on slot " << ps << " (st="
+                  << static_cast<int>( sl.st ) << "), frame " << sl.frame << " dropped\n";
+        lk.unlock();
+        pub_head_ = ( pub_head_ + 1 ) % 3;
+        --pub_n_;
+        return 0;
+    }
 
     double enc_ms = 0.0;
     if ( sl.npu_ok )

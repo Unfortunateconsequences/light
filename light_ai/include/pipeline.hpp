@@ -73,6 +73,9 @@ public:
     explicit Pipeline( const Config& cfg );
     ~Pipeline();  // stops the workers before the engines die
     int run();
+    // Graceful shutdown (P1-6): called from the SIGINT/SIGTERM handler;
+    // run() exits the frame loop through the normal drain/summary path.
+    void request_stop() { stop_.store( true ); }
 
 private:
     Config cfg_;
@@ -119,6 +122,7 @@ private:
         int64_t ts_us = -1;              // dequeue time, µs from start (VFR pts)
         bool rga_ok = false;             // captured at dispatch
         bool npu_ok = false;             // worker verdict, read at publish
+        bool drop = false;               // publish gave up: the worker frees the slot itself
         float lb_top = 0, lb_h = 0;      // letterbox geometry at dispatch
         double cam_ms = 0, dec_ms = 0, rga_ms = 0, infer_ms = 0;
         std::mutex mx;
@@ -128,13 +132,14 @@ private:
     std::array<Slot, 3> slots_ {};
     std::vector<std::thread> workers_;   // one per pooled engine
     std::atomic<bool> quit_ { false };
+    std::atomic<bool> stop_ { false };  // P1-6: set by the signal handler
     int pub_slots_[3] = { 0, 0, 0 };     // FIFO of slots awaiting publish
     int pub_head_ = 0;
     int pub_n_ = 0;
 
     void worker_loop( int slot );
     int publish_oldest();                // returns 1 if the frame was valid
-    void dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok,
+    void dispatch( int slot, int frame_idx, int64_t ts_us, bool rga_ok, int lb_top, int lb_h,
             double cam_ms, double dec_ms, double rga_ms );
     void cal_dump_maybe( RknnEngine& e, int frame_idx );  // shared by both paths
     void pool_discard();                 // drop pending slots on camera recovery
