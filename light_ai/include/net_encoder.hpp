@@ -59,9 +59,14 @@ private:
     void* frame_ = nullptr;  // AVFrame* (NV12 over an MPP DRM buffer)
     void* pkt_ = nullptr;    // AVPacket*
     MppBufferGroup buf_group_ = nullptr;
-    MppBuffer bufs_[2] = { nullptr, nullptr };  // ping-pong NV12 dma-bufs
+    // P1-4: three buffers, not two. Two worked only at a steady frame
+    // pace; with --net-fps 0 (VFR) frames arrive in clumps after a network
+    // pause, and two buffers can run out exactly at the 3-deep rkmpp task
+    // queue while an older encode still holds its plane.
+    static constexpr int kBufCount = 3;
+    MppBuffer bufs_[kBufCount] = { nullptr, nullptr, nullptr };  // ping-pong NV12 dma-bufs
     uint32_t cur_ = 0;
-    AVDRMFrameDescriptor desc_[2] {};  // per-buffer DRM descriptors (DRM_PRIME)
+    AVDRMFrameDescriptor desc_[kBufCount] {};  // per-buffer DRM descriptors (DRM_PRIME)
     int tensor_fd_ = -1;       // dma-buf fd of the NPU tensor (set in publish)
     int acq_fd_ = -1;          // draw fence fd, consumed by RGA in send_frame
     int64_t frame_step_ = 1;   // pts increment in the muxer's time base

@@ -94,8 +94,10 @@ NetEncoder::NetEncoder( int w, int h, int fps, int port, const std::string& host
     std::cout << "enc: tensor band y=[" << band_top_ << ',' << band_top_ + band_h_ << ") of " << model_w_ << 'x' << model_h_ << " -> " << w_
               << 'x' << h_ << '\n';
 
-    // Two NV12 dma-bufs from an MPP DRM pool: ping-pong so a plane held by
-    // the encoder is never overwritten by RGA on the next frame.
+    // Three NV12 dma-bufs from an MPP DRM pool (P1-4): a plane held by an
+    // older encode is never overwritten by RGA on the next frame; the
+    // third buffer absorbs VFR bursts where two ran out exactly at the
+    // 3-deep rkmpp task queue.
     if ( mpp_buffer_group_get( &buf_group_, MPP_BUFFER_TYPE_DRM, MPP_BUFFER_INTERNAL, MODULE_TAG, __FUNCTION__ ) != MPP_OK )
     {
         throw std::runtime_error( "net encoder: mpp_buffer_group_get failed" );
@@ -488,12 +490,12 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
     auto* st = static_cast<AVStream*>( stp );
     auto* ctx = static_cast<AVCodecContext*>( enc_ );
 
-    // Ping-pong: RGA never writes into a plane the previous encode still
-    // holds. improcess is the synchronous single-op form: it returns
+    // Triple buffer (P1-4): RGA never writes into a plane an older encode
+    // still holds. improcess is the synchronous single-op form: it returns
     // with the dst already finished for the CPU-side encoder read.
     // Ordering vs the GPU drawer is guaranteed upstream by poll() on
     // the exported draw fence (acq_fd_).
-    cur_ ^= 1u;
+    cur_ = ( cur_ + 1 ) % kBufCount;
     MppBuffer mb = bufs_[cur_];
 
     // Tensor path: crop the visible letterbox band out of the RGB888
@@ -647,7 +649,7 @@ bool NetEncoder::send_frame( void* fcp, void* stp )
         };
         auto starts_with = []( const AVPacket* q, const std::vector< uint8_t >& h ) -> bool
         {
-            return h.size() && q->size >= (int)h.size() && memcmp( q->data, h.data(), h.size() ) == 0;
+            return !h.empty() && q->size >= (int)h.size() && memcmp( q->data, h.data(), h.size() ) == 0;
         };
         AVPacket* dup = nullptr;
         if ( is_idr( pkt ) )
