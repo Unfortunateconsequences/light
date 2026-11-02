@@ -32,7 +32,11 @@ namespace
         while ( ::ioctl( fd, VIDIOC_QUERYCAP, &cap ) < 0 && errno == EINTR )
         {}
         bool ok = false;
-        if ( cap.capabilities & V4L2_CAP_VIDEO_CAPTURE )
+        // CAP_STREAMING (P1-5): a node that only supports read()/write()
+        // I/O passes the CAPTURE check but dies at QUERYBUF with a
+        // confusing error - reject it here, where the diagnosis is clear.
+        if ( ( cap.capabilities & V4L2_CAP_VIDEO_CAPTURE ) &&
+             ( cap.capabilities & V4L2_CAP_STREAMING ) )
         {
             const char* bus = reinterpret_cast<const char*>( cap.bus_info );
             ok = bus != nullptr && std::strstr( bus, "usb" ) != nullptr;
@@ -48,6 +52,8 @@ CameraV4L2::CameraV4L2( int w, int h ) : width_( w ), height_( h )
 // Full open+setup path for the node given by the owner: open + S_FMT +
 // G_FMT verification + REQBUFS/mmap/QBUF. Nothing is trusted blindly: a
 // substituted camera mode is caught here exactly like at startup.
+// Self-cleaning (P1-5): every error path after open() tears the device
+// down, so a failed setup never leaks an fd or a mapping.
 // Non-throwing: failures are reported via the return value and logged
 // here.
 int CameraV4L2::setup_device( const std::string& dev, std::string* why )
@@ -79,6 +85,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
         std::cerr << "camera: S_FMT: " << strerror( errno ) << '\n';
         if ( why )
             *why = "S_FMT failed";
+        teardown();
         return -1;
     }
 
@@ -92,6 +99,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
         std::cerr << "camera: G_FMT: " << strerror( errno ) << '\n';
         if ( why )
             *why = "G_FMT failed";
+        teardown();
         return -1;
     }
     if ( gfmt.fmt.pix.pixelformat != V4L2_PIX_FMT_MJPEG || 
@@ -102,6 +110,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
                   << gfmt.fmt.pix.height << " fourcc=" << std::hex << gfmt.fmt.pix.pixelformat << std::dec << '\n';
         if ( why )
             *why = "camera mode mismatch";
+        teardown();
         return -1;
     }
 
@@ -129,6 +138,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
         std::cerr << "camera: REQBUFS: " << strerror( errno ) << '\n';
         if ( why )
             *why = "REQBUFS failed";
+        teardown();
         return -1;
     }
 
@@ -136,6 +146,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
     {
         if ( why )
             *why = "camera: REQBUFS returned zero buffers";
+        teardown();
         return -1;
     }
 
@@ -144,6 +155,12 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
     // which has kBufCount slots — clamp before touching them.
     if ( req.count > kBufCount )
         req.count = kBufCount;
+    // The driver may also return FEWER buffers than requested. With < 3
+    // the pipeline loses its ping-pong depth (latency and jitter grow) -
+    // say so instead of silently degrading (P1-5).
+    if ( req.count < 3 )
+        std::cerr << "camera: REQBUFS returned only " << req.count
+                  << " buffers - expect extra latency\n";
 
     for ( unsigned i = 0; i < req.count; ++i )
     {
@@ -156,6 +173,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
             std::cerr << "camera: QUERYBUF idx=" << i << ": " << strerror( errno ) << '\n';
             if ( why )
                 *why = "QUERYBUF failed";
+            teardown();
             return -1;
         }
         bufs_[i].length = buf.length;
@@ -166,6 +184,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
             std::cerr << "camera: mmap idx=" << i << ": " << strerror( errno ) << '\n';
             if ( why )
                 *why = "mmap failed";
+            teardown();
             return -1;
         }
         if ( xioctl_r( VIDIOC_QBUF, &buf ) < 0 )
@@ -173,6 +192,7 @@ int CameraV4L2::setup_device( const std::string& dev, std::string* why )
             std::cerr << "camera: QBUF idx=" << i << ": " << strerror( errno ) << '\n';
             if ( why )
                 *why = "QBUF failed";
+            teardown();
             return -1;
         }
     }
@@ -192,8 +212,13 @@ void CameraV4L2::teardown()
         close( fd_ );
         fd_ = -1;
     }
-    for ( unsigned i = 0; i < kBufCount && bufs_[i].start; ++i )
+    // Do not stop at the first empty slot (P1-5): slot indices are dense
+    // today, but a future "skip a slot" logic in setup would silently leak
+    // every mapping after it. Skip empty slots instead of breaking out.
+    for ( unsigned i = 0; i < kBufCount; ++i )
     {
+        if ( !bufs_[i].start )
+            continue;
         munmap( bufs_[i].start, bufs_[i].length );
         bufs_[i].start = nullptr;
         bufs_[i].length = 0;
@@ -218,6 +243,7 @@ int CameraV4L2::reconnect( const std::string& dev, std::string* why )
         teardown();
         return -1;
     }
+    err_streak_ = 0;  // P1-7: fresh device session (stream running) — the corrupt streak starts over
     return 0;
 }
 
@@ -323,7 +349,6 @@ int CameraV4L2::dequeue( uint32_t* size, int* err )  // NOLINT(readability-make-
     v4l2_buffer buf {};
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
-    int err_streak = 0;
     while ( true )
     {
         // Watchdog: the wait is bounded by poll(). A camera that silently
@@ -364,16 +389,20 @@ int CameraV4L2::dequeue( uint32_t* size, int* err )  // NOLINT(readability-make-
         if ( buf.flags & V4L2_BUF_FLAG_ERROR )
         {
             requeue( static_cast<int>( buf.index ) );
-            ++err_streak;
-            if ( err_streak < static_cast<int>( kBufCount ) )
+            // P1-7: member, not a local — the streak survives dequeue()
+            // calls (e.g. corrupt frames followed by a poll timeout), so
+            // the watchdog threshold reflects the real buffer history.
+            ++err_streak_;
+            if ( err_streak_ < static_cast<int>( kBufCount ) )
                 continue;
-            std::cerr << "cam: " << err_streak << " consecutive corrupt buffers - stall\n";
+            std::cerr << "cam: " << err_streak_ << " consecutive corrupt buffers - stall\n";
             if ( err )
                 *err = EIO;
             return -1;
         }
         break;
     }
+    err_streak_ = 0;  // P1-7: a clean buffer resets the streak
     if ( err )
         *err = 0;
     if ( size )

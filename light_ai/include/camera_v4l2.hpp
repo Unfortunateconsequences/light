@@ -34,6 +34,9 @@ public:
     // length. On failure returns -1 and stores the errno value in *err:
     // ENODEV/EIO mean the device is gone or interrupted (recoverable),
     // any other errno is a hard error.
+    // P1-7: consecutive corrupt buffers (BUF_FLAG_ERROR) are counted
+    // ACROSS calls — the err_streak_ member, reset only by a clean
+    // frame or by reconnect(); kBufCount in a row = recoverable stall.
     int dequeue( uint32_t* size, int* err );
     void requeue( int index );
     void* buffer( int index ) const { return bufs_[index].start; }
@@ -55,6 +58,7 @@ private:
         kDequeuePollMs = 2000  // dequeue watchdog: no frame within this window = recoverable stall (EIO)
     };
     int fd_ = -1;
+    int err_streak_ = 0;  // P1-7: consecutive corrupt buffers, survives dequeue() calls
     int width_ = 0, height_ = 0;
     struct Buffer
     {
