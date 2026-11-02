@@ -26,3 +26,4 @@ misc/boxlog_*.csv
 dataset/
 dataset_night2/
 dataset_*.tgz
+*.bak-p*
