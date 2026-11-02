@@ -1,3 +1,5 @@
+#include <fstream>
+#include <filesystem>
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
@@ -142,6 +144,35 @@ namespace
                                 if ( !parse_int( v, &n ) || n < 1 || n > 10000 )
                                     return value_error( "--cal", v, "1..10000" );
                                 c.cal_frames = n;
+                                return true;
+                            } } },
+            { "--cal-dir",
+                    { true,
+                            "directory for the --cal series (default: dataset/)",
+                            []( Config& c, const char* v ) {
+                                std::error_code ec;
+                                std::filesystem::create_directories( v, ec );
+                                if ( ec ) {
+                                    std::cerr << "invalid value for --cal-dir: '"
+                                              << v << "' (" << ec.message() << ")\n";
+                                    return false;
+                                }
+                                // write probe: an existing but read-only
+                                // directory must fail here, not mid-run
+                                const std::string probe =
+                                        std::string( v ) + "/.light_ai_write_test";
+                                bool ok = false;
+                                {
+                                    std::ofstream f( probe );
+                                    ok = f.good();
+                                }
+                                std::filesystem::remove( probe, ec );
+                                if ( !ok ) {
+                                    std::cerr << "invalid value for --cal-dir: '"
+                                              << v << "' (not writable)\n";
+                                    return false;
+                                }
+                                c.cal_dir = v;
                                 return true;
                             } } },
             { "--cal-interval",
@@ -312,6 +343,19 @@ int main( int argc, char** argv )
                      "  push with --net-host); add --net to enable the "
                      "preview itself, e.g.:\n"
                      "    light_ai --net --net-h264\n";
+        return 2;
+    }
+
+    // --cal-dir only makes sense with the --cal series; --dump-cal always
+    // writes /tmp/cal.ppm and is unaffected. Post-parse for the same
+    // reason as --net-h264: order of argv is arbitrary.
+    if ( !cfg.cal_dir.empty() && cfg.cal_frames == 0 )
+    {
+        std::cerr << "--cal-dir: no --cal series requested, nothing to write.\n"
+                     "  --cal-dir sets the directory for the --cal N --cal-interval K\n"
+                     "  frame series; the single-shot --dump-cal always writes\n"
+                     "  /tmp/cal.ppm and ignores --cal-dir, e.g.:\n"
+                     "    light_ai --cal 5 --cal-interval 60 --cal-dir /tmp/calrun\n";
         return 2;
     }
 

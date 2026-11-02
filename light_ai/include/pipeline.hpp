@@ -60,6 +60,8 @@ struct Config
 
     // M3.10: per-frame box CSV for the jitter A/B (raw vs smoothed).
     std::string box_log;
+    // --cal-dir: overrides the --cal series directory (default: dataset/).
+    std::string cal_dir;
     std::string net_host;  // UDP push destination (--net-host); empty = TCP pull on net_port
     // M3.7: force the CPU box-drawing path (A/B vs the GPU drawer).
     bool cpu_draw = false;

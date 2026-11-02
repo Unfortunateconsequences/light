@@ -811,7 +811,10 @@ void Pipeline::cal_dump_maybe( RknnEngine& e, int frame_idx )
         // (README / tools/oracle_check.py protocol): with --cal-interval K
         // the files are frames 0, K, 2K, .... cal_saved_ stays as the
         // --cal N cap.
-        name << "dataset/cal_" << std::setw( 4 ) << std::setfill( '0' ) << frame_idx << ".ppm";
+        // Series directory: --cal-dir overrides the default dataset/.
+        name << ( cfg_.cal_dir.empty() ? std::string( "dataset/cal_" )
+                                       : cfg_.cal_dir + "/cal_" )
+             << std::setw( 4 ) << std::setfill( '0' ) << frame_idx << ".ppm";
         path = name.str();
     }
     std::ofstream out( path, std::ios::binary );
