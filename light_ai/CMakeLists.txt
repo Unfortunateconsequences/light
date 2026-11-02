@@ -103,7 +103,7 @@ target_link_libraries(light_ai PRIVATE
 
 target_link_directories(light_ai PRIVATE ${AV_LIBRARY_DIRS})
 
-set(TARGET_CPU_FLAGS "-mcpu=cortex-a76.cortex-a55" CACHE STRING
+set(TARGET_CPU_FLAGS "-mcpu=cortex-a76 -mtune=cortex-a76.cortex-a55" CACHE STRING
     "CPU flags for the target SoC")
 
 # пробелы -> точки с запятой, чтобы опции скормились компилятору по отдельности
