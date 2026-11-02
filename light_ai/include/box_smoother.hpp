@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -9,7 +10,8 @@
 
 // M3.10: EMA smoothing of detection boxes (owner-approved design).
 // Filtering lives in Pipeline; yolo_postprocess stays a pure function.
-// Greedy IoU matching (best IoU > 0.3, class must match); alpha = 0.5;
+// Global greedy IoU matching (P1-3: pairs sorted by IoU, assigned
+// best-first; class must match); tuning constants live in the class.
 // a missed detection keeps the track (and its filtered coords) for up
 // to 2 frames so a brief dropout does not reset the filter, more frees
 // the slot. No heap: a fixed std::array of 32 slots and fixed-capacity
@@ -32,32 +34,66 @@ public:
         out.clear();
         for ( auto& t : tracks_ )
             t.matched = false;
+
+        // P1-3: GLOBAL greedy matching. The in-order scan let the first
+        // detection steal a track just over the threshold while a much
+        // better match arriving later got the leftovers. All pairs are
+        // collected, sorted by IoU (descending) and assigned best-first —
+        // the standard greedy bipartite matching. Semantics otherwise
+        // unchanged: warm-up pass-through, miss expiry, out order.
+        struct Pair
+        {
+            float iou;
+            int det;
+            int trk;
+        };
+        std::array<Pair, kMaxPairs> pairs {};
+        int np = 0;
+        std::array<int, kMaxDet> det_trk {};
+        det_trk.fill( -1 );
+
+        for ( int i = 0; i < in.n && i < kMaxDet; ++i )
+        {
+            const Detection& d = in.d[i];
+            for ( int t = 0; t < kTrackCount; ++t )
+            {
+                const BoxTrack& tr = tracks_[t];
+                if ( !tr.alive || tr.matched || tr.cls != d.cls )
+                    continue;
+                const float v = iou( tr, d );
+                if ( v <= kMatchThr )
+                    continue;
+                if ( np < kMaxPairs )
+                    pairs[np++] = { v, i, t };
+            }
+        }
+        // Deterministic order: IoU desc, then det index, then track index.
+        std::sort( pairs.begin(), pairs.begin() + np, []( const Pair& a, const Pair& b ) {
+            return a.iou != b.iou ? a.iou > b.iou : ( a.det != b.det ? a.det < b.det : a.trk < b.trk );
+        } );
+        for ( int p = 0; p < np; ++p )
+        {
+            const Pair& pr = pairs[p];
+            if ( det_trk[pr.det] >= 0 || tracks_[pr.trk].matched )
+                continue;
+            det_trk[pr.det] = pr.trk;
+            BoxTrack& t = tracks_[pr.trk];
+            const Detection& d = in.d[pr.det];
+            t.x = kAlpha * t.x + ( 1.0f - kAlpha ) * d.x;
+            t.y = kAlpha * t.y + ( 1.0f - kAlpha ) * d.y;
+            t.w = kAlpha * t.w + ( 1.0f - kAlpha ) * d.w;
+            t.h = kAlpha * t.h + ( 1.0f - kAlpha ) * d.h;
+            t.miss = 0;
+            t.matched = true;
+        }
+
         for ( int i = 0; i < in.n; ++i )
         {
             const Detection& d = in.d[i];
-            int best = -1;
-            float best_iou = 0.3f;
-            for ( size_t t = 0; t < tracks_.size(); ++t )
-            {
-                if ( !tracks_[t].alive || tracks_[t].matched || tracks_[t].cls != d.cls )
-                    continue;
-                const float v = iou( tracks_[t], d );
-                if ( v > best_iou )
-                {
-                    best_iou = v;
-                    best = static_cast<int>( t );
-                }
-            }
             Detection sd = d;
-            if ( best >= 0 )
+            if ( i < kMaxDet && det_trk[i] >= 0 )
             {
-                BoxTrack& t = tracks_[best];
-                t.x = 0.5f * t.x + 0.5f * d.x;
-                t.y = 0.5f * t.y + 0.5f * d.y;
-                t.w = 0.5f * t.w + 0.5f * d.w;
-                t.h = 0.5f * t.h + 0.5f * d.h;
-                t.miss = 0;
-                t.matched = true;
+                const BoxTrack& t = tracks_[det_trk[i]];
                 sd.x = t.x;
                 sd.y = t.y;
                 sd.w = t.w;
@@ -83,7 +119,7 @@ public:
             out.push( sd );
         }
         for ( auto& t : tracks_ )
-            if ( t.alive && !t.matched && ++t.miss > 2 )
+            if ( t.alive && !t.matched && ++t.miss > kMaxMiss )
                 t.alive = false;
     }
 
@@ -134,6 +170,18 @@ private:
 
 private:  // data (header-layout rule: functions first, then a
           // fresh visibility label for the data)
-    std::array<BoxTrack, 32> tracks_ {};
+    // Tuning (P1-3): the literals were inline; now named, one place to
+    // tune. kAlpha is the EMA weight of the TRACK (0.5 = plain average).
+    static constexpr float kMatchThr = 0.3f;
+    static constexpr float kAlpha = 0.5f;
+    static constexpr int kMaxMiss = 2;
+    static constexpr int kTrackCount = 32;
+    // Detections beyond kMaxDet are never matched to existing tracks
+    // (they pass through / spawn fresh tracks, as before) — kMaxDet is
+    // sized above the DetList capacity as a safety net.
+    static constexpr int kMaxDet = 128;
+    static constexpr int kMaxPairs = kTrackCount * kMaxDet;
+
+    std::array<BoxTrack, kTrackCount> tracks_ {};
     std::ofstream log_;
 };
