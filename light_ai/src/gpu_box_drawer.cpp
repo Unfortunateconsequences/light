@@ -379,9 +379,31 @@ bool GpuBoxDrawer::attach_slot( int slot, int tensor_dma_fd, int w, int h, uint3
         si = {};
         return false;
     }
-    st_.w = w;
-    st_.h = h;
-    st_.stride = stride;
+    // Geometry guard (P0-5): the first attach fixes the shared
+    // geometry (st_.w/h/stride feed the viewport, shader math and the
+    // sync path). A later slot with different w/h/stride would either
+    // draw outside its FBO or corrupt the tensor via a stale stride.
+    // Fail loudly instead of silently writing into someone else's
+    // pixels. The partial attach is torn down like the FBO-incomplete
+    // path, so a retry starts clean.
+    if ( st_.w == 0 )
+    {
+        st_.w = w;
+        st_.h = h;
+        st_.stride = stride;
+    }
+    else if ( st_.w != w || st_.h != h || st_.stride != stride )
+    {
+        std::cerr << "drawer: slot " << slot << " geometry mismatch: " << w << 'x' << h << " stride=" << stride
+                  << " vs " << st_.w << 'x' << st_.h << " stride=" << st_.stride << '\n';
+        glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+        glDeleteFramebuffers( 1, &si.fbo );
+        glDeleteTextures( 1, &si.tex );
+        if ( st_.destroy_image )
+            st_.destroy_image( st_.dpy, si.img );
+        si = {};
+        return false;
+    }
     std::cout << "drawer: tensor attached (slot " << slot << ") " << w << 'x' << h << " stride=" << stride
               << " (native fence: " << ( st_.native_fence ? "yes" : "no" ) << ")\n";
     return true;
