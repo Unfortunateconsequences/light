@@ -501,3 +501,26 @@ are the pure figures; prod steady-state [timing] figures are NOT pure
 | NPU 10/9/10% per core | pool live, debugfs rknpu/load | int8_mmse, 960p | prod, 3 workers | 11-02 | VERIFIED live: three cores balanced under round-robin dispatch; total inference budget same as single-context |
 | CPU ~8% user (vmstat) | pool + h264 stream live | — | prod | 11-02 | VERIFIED live: whole pipeline incl. encoder muxes on ~8% user CPU across cores; consistent with 18.6 s/600f registry row | 
 | GPU practically idle | debugfs mali0 dvfs_utilization | — | prod | 11-02 | VERIFIED live: busy/idle ticks never fire (batch draw per frame is below the DVFS tick granularity), cur_freq stays 1 GHz in performance; boxes render (visual confirmation) — counter-blind, not draw-dead |
+| -mcpu=cortex-a76 -mtune=cortex-a76.cortex-a55 | CMakeLists TARGET_CPU_FLAGS A/B | int8_mmse_v5, 960p | prod, h264 pull, viewer attached | 11-02 | NO EFFECT vs -mcpu=cortex-a76: sum 95.2-95.8 ms / ~20.0 FPS both — camera-bound, inference lives on the NPU. Kept as documentation of intent. The dot form is legal only in -mtune (GCC 10.2 rejects -mcpu=cortex-a76+cortex-a55: "+" there means a feature modifier) |
+
+## Shutdown observations (2026-11-02): MPP prints on the graceful exit
+
+Two post-P1-6 live runs, both Ctrl-C with a viewer attached:
+- Run A (3000 frames, post-P1-5 binary): clean exit — the last MPP
+  line is the normal "mpp_buffer: mpp_buffer_service_deinit cleaning
+  misc group"; zero warnings.
+- Run B (1021 frames, the CPU-flags rebuild): stderr carried
+  "mpp_meta: put_meta invalid negative ref_count -1" and
+  "mpp_mem_pool: mpp_mem_pool_put invalid mem pool ptr ...
+  caller mpp_packet_deinit" before the same service_deinit line.
+Working hypothesis (undiagnosed): a packet double-deinit on the
+shutdown path, phase-dependent on where Ctrl-C lands relative to the
+encoder flush / decoder state (run A hit a different phase). NOT the
+M3.5-era ref_count warning (that was the mpp_buffer path, closed by
+the EOS fixes) — this one is the mpp_packet/meta path. No crash, no
+other symptoms; the "Processed N frames" line and the exit are clean
+in both runs.
+Backlog: P2 candidate "shutdown-path double packet_deinit" — needs
+src/mpp_decoder.cpp + src/net_encoder.cpp teardown review. Not
+reproducible on demand (phase-dependent; try Ctrl-C at different
+points of the run and record which phase produces the prints).

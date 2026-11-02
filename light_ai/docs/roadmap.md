@@ -396,6 +396,63 @@ refer to README.md sections (../README.md).
         a side effect: the 32-slot tracker no longer churns on ~30
         duplicate copies of one object per frame (the old accumulating
         DetList fed them to BoxSmoother every frame).
+- [x] P0/P1 hardening pass (2026-11-02, CLOSED): a reliability review
+      of the whole tree before the M5 refactor; every patch is an
+      anchor-verified, all-or-nothing script; every change verified
+      by build + live h264 runs (steady sum 95.2-95.8 ms / ~20.0 FPS
+      unchanged across the series).
+      Commits: 706f9e2 (P0-1), 5ccf687 (P0-3+3b), 2511123 (P0-5),
+      89bd163 (P0-2/P1-1/P1-6), c129841 (P0-4/P1-6), eb86679 (P1-2),
+      05f6d3d (P1-3), 15ffa5b (P1-4), ceec21d (P1-5/P1-7), plus the
+      CMake and README doc commits.
+      - P0-1 MppDecoder: the packet is drained per call on every
+        path (error and success); on -6/-7 (output poll/dequeue
+        failure) mpi->reset() runs first — the permanent -3 after
+        a single -6 is gone.
+      - P0-2 Pipeline: publish_oldest() bounded wait (5 s) with
+        quit_ in the predicate; a timed-out slot is marked drop and
+        freed by its worker after the in-flight rknn_run completes
+        (never while the NPU reads the tensor).
+      - P0-3(+3b) RknnEngine: non-copyable, safe move ctor (hollow
+        shell, ctx_=0) — vector::reserve stays legal.
+      - P0-4 main: --w/--h validated (16..8192, non-16-multiple
+        warning; 1080p stays a documented mode).
+      - P0-5 GpuBoxDrawer: attach_slot() geometry mismatch guard —
+        the first attach fixes the shared geometry, any later
+        mismatch fails loudly with partial attach cleanup.
+      - P1-1 RgaResizer: letterbox geometry is a per-call LbGeom
+        value carried through dispatch into the slot — the shared
+        mutable members (a cross-thread race under --pool 3) are
+        gone.
+      - P1-2 yolo_postprocess: degenerate boxes (w/h <= 0) dropped
+        before out.push().
+      - P1-3 BoxSmoother: global greedy IoU matching (all (det,
+        track) pairs sorted by IoU desc, assigned best-first)
+        replaces the in-order scan; named class constants. Live:
+        a person entering/leaving the scene no longer lets one
+        detection steal a track.
+      - P1-4 NetEncoder: the NV12 pool is three buffers deep (two
+        could run out at the 3-deep rkmpp task queue when VFR
+        frames arrive in clumps); the slot advance is modulus-based.
+      - P1-5 CameraV4L2: teardown() on every setup_device error
+        path after open(); CAP_STREAMING required in the usb node
+        check; REQBUFS returning < 3 buffers warns loudly;
+        teardown() skips empty slots instead of breaking early.
+      - P1-6 graceful shutdown: SIGINT/SIGTERM set a stop flag and
+        run() exits through the normal path (ring drain, TOTAL
+        summary, encoder flush, camera STREAMOFF); verified live
+        with a viewer attached.
+      - P1-7(+7b) CameraV4L2: the consecutive-corrupt-buffer streak
+        is a class member (survives dequeue() calls, reset only by
+        a clean frame or reconnect()); the STREAMON call itself was
+        briefly dropped by P1-7 and restored in P1-7b — caught by
+        the compiler warning before any live disconnect.
+      Declined by review as by-design: decoder/encoder network
+      timeouts, socket close in the encoder destructor.
+      Open leftovers: the mpp_meta put_meta negative ref_count at
+      shutdown (undiagnosed, phase-dependent — see state.md,
+      Shutdown observations); the static-constexpr rule
+      clarification (owner: deferred).
 - [ ] M6: toolchain hygiene (recorded 2026-10-27 by owner, restored
       from session notes 2026-10-28): (a) clang-format — one enforced
       style across the tree; the recurring whitespace-only artifacts
