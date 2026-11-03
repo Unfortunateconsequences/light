@@ -5,6 +5,15 @@
 
 #include "mpp_decoder.hpp"
 
+#include <rockchip/mpp_log.h>
+
+// MPP logs its version banner, rc/prep config and teardown meta dumps
+// at info/error level by default. Silence it for production runs;
+// set MPP_LOG_WARN below temporarily when debugging MPP internals.
+static struct MppLogQuieter {
+    MppLogQuieter() { mpp_set_log_level( MPP_LOG_WARN ); }
+} g_mpp_log_quieter;
+
 MppDecoder::MppDecoder( int w, int h ) : w_( w ), h_( h )
 {
     do
@@ -87,6 +96,32 @@ MppDecoder::~MppDecoder()
     if ( !ctx_ )
         return;
     mpi_->reset( ctx_ );
+
+    // Strip meta references from the tasks left in the ports. The decoder
+    // recycles consumed input tasks back to the user side of the input port
+    // with the packet pointer still in the meta. Once we deinit that packet,
+    // the pointer dangles, and the decoder teardown (dec_release_task_in_port)
+    // dereferences it and double-deinits it ("negative ref_count" /
+    // "invalid mem pool ptr"). Dequeued tasks are held, not re-enqueued:
+    // mpp_destroy frees all tasks with its queues anyway.
+    for ( int i = 0; i < 32; i++ ) {
+        MppTask t = nullptr;
+        if ( mpi_->poll( ctx_, MPP_PORT_INPUT, MPP_POLL_NON_BLOCK ) != MPP_OK )
+            break;
+        if ( mpi_->dequeue( ctx_, MPP_PORT_INPUT, &t ) != MPP_OK || !t )
+            break;
+        mpp_task_meta_set_packet( t, KEY_INPUT_PACKET, NULL );
+        mpp_task_meta_set_frame( t, KEY_OUTPUT_FRAME, NULL );
+    }
+    for ( int i = 0; i < 32; i++ ) {
+        MppTask t = nullptr;
+        if ( mpi_->poll( ctx_, MPP_PORT_OUTPUT, MPP_POLL_NON_BLOCK ) != MPP_OK )
+            break;
+        if ( mpi_->dequeue( ctx_, MPP_PORT_OUTPUT, &t ) != MPP_OK || !t )
+            break;
+        mpp_task_meta_set_packet( t, KEY_INPUT_PACKET, NULL );
+        mpp_task_meta_set_frame( t, KEY_OUTPUT_FRAME, NULL );
+    }
 
     // Critical order: release every MPP object that may hold references to
     // buffers BEFORE mpp_destroy(). MPP tears down its internal buffer pools
@@ -201,6 +236,9 @@ int MppDecoder::decode( const uint8_t* data, size_t size )
         // Hand the task back so the decoder thread is not stuck waiting
         // for it forever on the next poll. A failed re-enqueue means the
         // queue state is broken: log it loudly, no third attempt.
+        // Packet is dropped with the failed task: clear the dangling
+        // KEY_INPUT_PACKET pointer before the task goes back to the port.
+        mpp_task_meta_set_packet( task, KEY_INPUT_PACKET, NULL );
         if ( mpi_->enqueue( ctx_, MPP_PORT_INPUT, task ) != MPP_OK )
         {
             std::cerr << "dec: task re-enqueue failed, decoder queue state broken\n";
@@ -257,6 +295,7 @@ int MppDecoder::decode( const uint8_t* data, size_t size )
         std::cerr << "dec: info_change " << w << 'x' << h << " buf_size=" << bs << '\n';
 
         // Return the task BEFORE touching out_frame_
+        mpp_task_meta_set_packet( task, KEY_INPUT_PACKET, NULL );
         mpi_->enqueue( ctx_, MPP_PORT_OUTPUT, task );
 
         mpp_frame_set_width( out_frame_, w );
@@ -301,6 +340,7 @@ int MppDecoder::decode( const uint8_t* data, size_t size )
         }
     }
 
+    mpp_task_meta_set_packet( task, KEY_INPUT_PACKET, NULL );
     mpi_->enqueue( ctx_, MPP_PORT_OUTPUT, task );
     // The output task is back in the free list, the decoder no longer
     // references the packet: safe point for deinit (instead of the top
