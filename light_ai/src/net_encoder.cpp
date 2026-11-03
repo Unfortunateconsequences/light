@@ -183,29 +183,81 @@ NetEncoder::~NetEncoder()
         thread_.join();
     if ( enc_ )
     {
-        // Drain the encoder: send EOF and collect any pending packets so
-        // the rkmpp wrapper releases its queued MppFrames while its own
-        // MPP context is still alive. Without the flush the wrapper tears
-        // down its pools first and then runs mpp_frame_deinit on the
-        // leftovers — "non-positive ref_count" / "invalid mem pool ptr"
-        // at exit.
+        // Drain the encoder: send EOF and collect EVERY pending packet
+        // until AVERROR_EOF (P2-a), so the rkmpp wrapper releases its
+        // queued MppFrames while its own MPP context is still alive.
+        // Without the flush the wrapper tears down its pools first and
+        // then runs mpp_frame_deinit on the leftovers — "non-positive
+        // ref_count" / "invalid mem pool ptr" at exit.
         auto* ctx = static_cast<AVCodecContext*>( enc_ );
         // Drain only if frames were actually encoded: EOF on an idle
         // encoder makes the wrapper's flush path touch an already-torn-down
         // MPP pool ("invalid mem pool ptr" at exit, idle-run case).
-        if ( frames_sent_ > 0 && avcodec_send_frame( ctx, nullptr ) == 0 )
+        if ( frames_sent_ > 0 )
         {
             AVPacket* pkt = static_cast<AVPacket*>( pkt_ );
-            for ( ;; )
+            // The wrapper runs a NON_BLOCK output timeout (no LOW_DELAY
+            // flag): EAGAIN during flush means "frames still in flight",
+            // not "done". Stopping at the first EAGAIN left up to 3
+            // frames + EOS queued inside MPP; mpp_destroy then tore its
+            // internal queues down over live packets (the shutdown
+            // prints "mpp_meta: put_meta negative ref_count" /
+            // "mpp_mem_pool ... caller mpp_packet_deinit",
+            // 2026-11-02, phase-dependent). Bounded: the encoder holds
+            // at most kBufCount frames and codes ~1-2 ms each, so the
+            // guards below can never loop forever.
+            // EOF must reach the wrapper: on EAGAIN from send (input
+            // queue full) pull one output packet out first, then retry
+            // the EOF.
+            for ( int attempt = 0; attempt < 8; ++attempt )
+            {
+                if ( avcodec_send_frame( ctx, nullptr ) == 0 )
+                    break;
+                if ( avcodec_receive_packet( ctx, pkt ) == 0 )
+                {
+                    av_packet_unref( pkt );
+                    continue;
+                }
+                break;  // non-EAGAIN error: drain only as far as it goes
+            }
+            // Drain until EOF; EAGAIN here = async frames in flight.
+            // P2-b telemetry: pulled / eof / eagains make the drain outcome
+            // visible - the shutdown-print investigation needs to know
+            // whether EOF was reached at all (the P2-a fix alone did NOT
+            // silence the prints, Ctrl-C phase test 2026-11-03).
+            int pulled = 0;
+            bool eof = false;
+            int eagains = 0;
+            for ( int guard = 0; guard < 512; ++guard )
             {
                 const int r = avcodec_receive_packet( ctx, pkt );
                 if ( r == 0 )
                 {
                     av_packet_unref( pkt );
+                    ++pulled;
                     continue;
                 }
-                break;  // EAGAIN / EOF / error — nothing left to drain
+                if ( r == AVERROR_EOF )
+                {
+                    eof = true;
+                    break;
+                }
+                if ( r == AVERROR( EAGAIN ) )
+                {
+                    ++eagains;
+                    std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+                    continue;
+                }
+                std::cerr << "enc: drain receive error, residual frames possible\n";
+                break;
             }
+            // P2-b: the drain verdict goes to stdout for the phase-test record.
+            std::cout << "enc: drain: " << pulled << " packet(s), "
+                      << ( eof ? "EOF reached"
+                               : "NO EOF (EAGAIN x" ) ;
+            if ( !eof )
+                std::cout << eagains << ")";
+            std::cout << "\n";
         }
         avcodec_free_context( reinterpret_cast<AVCodecContext**>( &enc_ ) );
     }
